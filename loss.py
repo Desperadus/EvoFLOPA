@@ -4,6 +4,11 @@ from typing import List
 from utils import get_docking_score
 import logging
 
+from rdkit.Chem import RDConfig
+import os
+import sys
+sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
+import sascorer
 
 def calculate_loss(sdf_file: str, config_data: dict) -> float:
     """Calculates a loss score based on SA, QED, and docking scores."""
@@ -11,13 +16,17 @@ def calculate_loss(sdf_file: str, config_data: dict) -> float:
         mol = Chem.SDMolSupplier(sdf_file, removeHs=True)[0]
         if mol is None:
             raise ValueError(f'Cannot get molecule {sdf_file}')
-        sa_score = config_data['sa_weight'] * Descriptors.MolLogP(mol)
-        qed_score = config_data['qed_weight'] * QED.qed(mol)
+
+        real_sa_score = sascorer.calculateScore(mol)
+        real_qed_score = QED.qed(mol)
+
+        sa_score = config_data['sa_weight'] * (1 - real_sa_score/10)
+        qed_score = config_data['qed_weight'] * real_qed_score
         docking_score = config_data["docking_weight"] * \
-            get_docking_score(sdf_file)
+            get_docking_score(sdf_file)*-1
 
         loss_value = sa_score + qed_score + docking_score
-        return loss_value
+        return loss_value, {"SA": real_sa_score, "QED": real_qed_score, "Docking": docking_score, "Adjusted SA": sa_score, "Adjusted QED": qed_score}
     except Exception as e:
         logging.error(f"Error during loss calculation of {sdf_file}: {e}")
         return float('-inf')  # If an error occurs, return the worst loss value
