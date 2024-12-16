@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from unidock_tools.application.mcdock import MultiConfDock
+from unidock_tools.application.unidock_pipeline import UniDock
 import config
 from loss import calculate_loss
 from stoned import STONED
@@ -30,9 +31,9 @@ def get_parser():
                         help="Size Y for docking box (default 22.5)")
     parser.add_argument("-sz", "--size_z", type=float, default=22.5,
                         help="Size Z for docking box (default 22.5)")
-    parser.add_argument("--num_iterations", type=int, default=5,
+    parser.add_argument("--num_iterations", type=int, default=10,
                         help="Number of iterations for the iterative docking.")
-    parser.add_argument("--batch_size", type=int, default=10,
+    parser.add_argument("--num_confs", type=int, default=5,
                         help="Number of molecules to generate in each iteration.")
     parser.add_argument("-wd", "--workdir", type=str,
                         default="iterative_docking_workdir", help="Working directory.")
@@ -40,6 +41,10 @@ def get_parser():
                         default="iterative_docking_results", help="Save directory.")
     parser.add_argument("-conf", "--config", type=str,
                         default="config.json", help="config_file")
+    parser.add_argument("-bs", "--batch_size", type=int, default=512,
+                        help="Batch size for docking in unidock")
+    parser.add_argument("-nv", "--num_variants", type=int, default=10,
+                        help="Number of variants to generate in each iteration.")
 
     return parser
 
@@ -60,7 +65,9 @@ def main():
     center_coords = (args.center_x, args.center_y, args.center_z)
     box_sizes = (args.size_x, args.size_y, args.size_z)
     num_iterations = args.num_iterations
+    num_variants = args.num_variants
     batch_size = args.batch_size
+    num_confs = args.num_confs
     workdir = Path(args.workdir).resolve()
     savedir = Path(args.savedir).resolve()
 
@@ -68,18 +75,6 @@ def main():
     stoned = STONED(config_data=config_data)
 
     # Initialize Uni-Dock
-    mcdock = MultiConfDock(
-        receptor=receptor_path,
-        ligands=[ligand_path],
-        center_x=center_coords[0],
-        center_y=center_coords[1],
-        center_z=center_coords[2],
-        size_x=box_sizes[0],
-        size_y=box_sizes[1],
-        size_z=box_sizes[2],
-        workdir=workdir,
-    )
-
     best_molecule_path = ligand_path
     # Initialize with negative infinity (assuming we want to maximize the score)
     best_score = float('-inf')
@@ -91,28 +86,42 @@ def main():
         generated_molecules_sdf_list = stoned.generate_molecules(
             seed_molecule_path=best_molecule_path,
             output_dir=Path(workdir / f"generation_{i+1}").resolve(),
-            num_molecules=batch_size
+            num_molecules=num_variants,
+            num_conformers=num_confs,
         )
+
+        unidock = UniDock(
+            receptor=receptor_path,
+            ligands=generated_molecules_sdf_list,
+            center_x=center_coords[0],
+            center_y=center_coords[1],
+            center_z=center_coords[2],
+            size_x=box_sizes[0],
+            size_y=box_sizes[1],
+            size_z=box_sizes[2],
+            workdir=workdir,
+        )
+
         # 2. Perform Docking and Score Evaluation
-        mcdock.run_unidock(
+        unidock.docking(
             scoring_function="vina",
-            num_modes=1,
-            score_only=True,
-            batch_size=1,
+            num_modes=3,
+            batch_size=batch_size,
+            save_dir = Path(savedir / f"docking_{i+1}").resolve(),
             docking_dir_name=f"docking_{i+1}",
         )
-        scored_molecules = mcdock.save_results(
-            save_dir=Path(savedir / f"docking_{i+1}").resolve())
+        scored_molecules_list  =  [Path(savedir / f"docking_{i+1}" / f"{Path(mol_path).stem}.sdf") for mol_path in generated_molecules_sdf_list]
 
         # Each entry contains docking, QED, SA etc. scores.
         molecules_data: List[Dict] = []
-        for scored_mol_path in scored_molecules:
-            loss_value = calculate_loss(
+        for scored_mol_path in scored_molecules_list:
+            loss_value, metrics = calculate_loss(
                 sdf_file=scored_mol_path, config_data=config_data)
 
             molecules_data.append(
                 {"sdf_path": scored_mol_path,
-                 "loss_value": loss_value}
+                 "loss_value": loss_value,
+                    "metrics": metrics}
             )
 
         # 3. Find best performing molecule from the current batch
@@ -123,7 +132,7 @@ def main():
                 best_score = best_current_molecule["loss_value"]
                 best_molecule_path = best_current_molecule["sdf_path"]
             logging.info(
-                f" Best molecule obtained with score {best_score} is in {best_molecule_path}")
+                f" Best molecule obtained with score {best_score} is in {best_molecule_path}, with metrics: {best_current_molecule['metrics']}")
 
         else:
             logging.warning(

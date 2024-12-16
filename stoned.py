@@ -1,10 +1,14 @@
 import random
 import numpy as np
 from rdkit import Chem
+from rdkit.Chem import AllChem
 from selfies import encoder, decoder, get_semantic_robust_alphabet
 from utils import sanitize_smiles
 from pathlib import Path
 from typing import List
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class STONED:
@@ -91,42 +95,71 @@ class STONED:
             selfie = selfie[selfie.find(']')+1:]
         return chars_selfie
 
-    def generate_molecules(self, seed_molecule_path: Path, output_dir: Path, num_molecules: int = 10) -> List[Path]:
-        """Generates a set of molecules using STONED."""
+    def generate_molecules(
+        self,
+        seed_molecule_path: Path,
+        output_dir: Path,
+        num_molecules: int = 10,
+        num_conformers: int = 1
+                        ) -> List[Path]:
+        """Generates a set of molecules using STONED with conformer optimization and parallel processing."""
         os.makedirs(output_dir, exist_ok=True)
 
         # Load Initial Molecule
         mols = Chem.SDMolSupplier(str(seed_molecule_path), removeHs=True)
         if not mols or not mols[0]:
-            raise Exception(
-                f"Cannot obtain valid molecule using {seed_molecule_path}")
+            raise Exception(f"Cannot obtain valid molecule using {seed_molecule_path}")
         mol = mols[0]
-        starting_smiles = Chem.MolToSmiles(
-            mol, isomericSmiles=True, canonical=True)
+        
+
+        if mol.HasProp("SELFIE"):
+            starting_selfie = mol.GetProp("SELFIE")
+        else:
+            # Encode with SELFIE string
+            starting_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+            starting_selfie = encoder(starting_smiles)
 
         # Encode with SELFIE string
-        starting_selfie = encoder(starting_smiles)
         len_random_struct = len(self.get_selfie_chars(starting_selfie))
 
         generated_molecules = []
-        for i in range(num_molecules):
-            # Mutate the self string and save as .sdf file
-            mutated_selfie, mutated_smiles = self.mutate_selfie(
-                starting_selfie, max_molecules_len=len_random_struct)
 
+        def process_molecule(i):
             try:
+                # Mutate the self string
+                mutated_selfie, mutated_smiles = self.mutate_selfie(
+                    starting_selfie, max_molecules_len=len_random_struct
+                )
+
                 mutated_mol = Chem.MolFromSmiles(mutated_smiles)
+                if mutated_mol is None:
+                    return None
+                
+                mutated_mol = Chem.AddHs(mutated_mol)
+                mutated_mol.SetProp("SMILES", mutated_smiles)
+                mutated_mol.SetProp("SELFIE", mutated_selfie)
+
+                # Add conformers
+                for _ in range(num_conformers):
+                    embed_status = AllChem.EmbedMolecule(mutated_mol, AllChem.ETKDG())
+                    if embed_status != 0:
+                        logging.warning(f"Embedding failed for molecule {i+1}")
+                        continue
+                    AllChem.MMFFOptimizeMolecule(mutated_mol)
+
+                file_name = f"generated_molecule_{i+1}.sdf"
+                file_path = output_dir / file_name
+                with Chem.SDWriter(str(file_path)) as writer:
+                    writer.write(mutated_mol)
+                return file_path
             except:
-                raise ValueError("Invalid SMILES encountered after mutation")
+                return None
 
-            if mutated_mol == None:
-                raise ValueError(
-                    "Invalid rdkit mol object created after SELFIE mutation")
-
-            file_name = f"generated_molecule_{i+1}.sdf"
-            file_path = Path(output_dir / file_name)
-            with Chem.SDWriter(str(file_path)) as writer:
-                writer.write(mutated_mol)
-            generated_molecules.append(file_path)
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_molecule, i) for i in range(num_molecules)]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    generated_molecules.append(result)
 
         return generated_molecules
