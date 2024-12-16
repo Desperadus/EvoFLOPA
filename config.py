@@ -11,8 +11,8 @@ def load_config(config_path: str) -> dict:
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logging.error(f"Error loading config file {config_path}: {e}")
         return {
-            'sa_weight': 0.1,
-            'qed_weight': 0.1,
+            'sa_weight': 2,
+            'qed_weight': 1,
             'docking_weight': 1.0
         }  # default configuration
 
