@@ -33,7 +33,7 @@ def get_parser():
                         help="Size Z for docking box (default 22.5)")
     parser.add_argument("--num_iterations", type=int, default=10,
                         help="Number of iterations for the iterative docking.")
-    parser.add_argument("--num_confs", type=int, default=5,
+    parser.add_argument("--num_confs", type=int, default=1,
                         help="Number of molecules to generate in each iteration.")
     parser.add_argument("-wd", "--workdir", type=str,
                         default="iterative_docking_workdir", help="Working directory.")
@@ -75,16 +75,16 @@ def main():
     stoned = STONED(config_data=config_data)
 
     # Initialize Uni-Dock
-    best_molecule_path = ligand_path
-    # Initialize with negative infinity (assuming we want to maximize the score)
-    best_score = float('-inf')
+    best_molecule = {"sdf_path": ligand_path,
+                 "loss_value": float('-inf'),
+                    "metrics": {}}
 
     for i in range(num_iterations):
         logging.info(f"Starting iteration {i+1}/{num_iterations}")
 
         # 1. Generate molecules with STONED
         generated_molecules_sdf_list = stoned.generate_molecules(
-            seed_molecule_path=best_molecule_path,
+            seed_molecule_path=best_molecule["sdf_path"],
             output_dir=Path(workdir / f"generation_{i+1}").resolve(),
             num_molecules=num_variants,
             num_conformers=num_confs,
@@ -128,11 +128,10 @@ def main():
         if molecules_data:
             best_current_molecule = max(
                 molecules_data, key=lambda mol: mol["loss_value"])
-            if best_current_molecule["loss_value"] > best_score:
-                best_score = best_current_molecule["loss_value"]
-                best_molecule_path = best_current_molecule["sdf_path"]
+            if best_current_molecule["loss_value"] > best_molecule["loss_value"]:
+                best_molecule = best_current_molecule
             logging.info(
-                f" Best molecule obtained with score {best_score} is in {best_molecule_path}, with metrics: {best_current_molecule['metrics']}")
+                f" Best molecule obtained with score {best_molecule["loss_value"]} is in {best_molecule["sdf_path"]}, with metrics: {best_molecule['metrics']}")
 
         else:
             logging.warning(
