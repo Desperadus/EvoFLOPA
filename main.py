@@ -10,6 +10,10 @@ import config
 from loss import calculate_loss
 from stoned import STONED
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict
+
+import csv
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -35,10 +39,8 @@ def get_parser():
                         help="Number of iterations for the iterative docking.")
     parser.add_argument("--num_confs", type=int, default=1,
                         help="Number of molecules to generate in each iteration.")
-    parser.add_argument("-wd", "--workdir", type=str,
-                        default="iterative_docking_workdir", help="Working directory.")
-    parser.add_argument("-sd", "--savedir", type=str,
-                        default="iterative_docking_results", help="Save directory.")
+    parser.add_argument("-en", "--experiment_name", type=str,
+                        default="iterative_docking", help="Working directory.")
     parser.add_argument("-conf", "--config", type=str,
                         default="config.json", help="config_file")
     parser.add_argument("-bs", "--batch_size", type=int, default=512,
@@ -48,15 +50,74 @@ def get_parser():
 
     return parser
 
+def basic_docking(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, generated_molecules_sdf_list, index):
+    unidock = UniDock(
+            receptor=receptor_path,
+            ligands=generated_molecules_sdf_list,
+            center_x=center_coords[0],
+            center_y=center_coords[1],
+            center_z=center_coords[2],
+            size_x=box_sizes[0],
+            size_y=box_sizes[1],
+            size_z=box_sizes[2],
+            workdir=workdir,
+        )
+
+        # 2. Perform Docking and Score Evaluation
+    unidock.docking(
+        scoring_function="vina",
+        num_modes=3,
+        batch_size=batch_size,
+        save_dir = Path(savedir / f"docking_{index+1}").resolve(),
+        docking_dir_name=f"docking_{index+1}",
+    )
+    scored_molecules_list  =  [Path(savedir / f"docking_{index+1}" / f"{Path(mol_path).stem}.sdf") for mol_path in generated_molecules_sdf_list]
+
+    return scored_molecules_list
+
+def score_molecule(scored_mol_path, config_data):
+    loss_value, metrics = calculate_loss(sdf_file=scored_mol_path, config_data=config_data)
+    return {"sdf_path": scored_mol_path, "loss_value": loss_value, "metrics": metrics}
+
+def score_molecules(scored_molecules_list, config_data):
+    molecules_data: List[Dict] = []
+
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(score_molecule, scored_mol_path, config_data) for scored_mol_path in scored_molecules_list]
+        for future in as_completed(futures):
+            result = future.result()
+            molecules_data.append(result)
+
+    return molecules_data
+
+# Creates a csv for the docking experiment, where each row contains the molecule's name, docking score, QED, SA etc.
+def create_docking_csv(csv_path):
+    with open(csv_path, mode='w') as csv_file:
+        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score"]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+def add_docking_csv_results(csv_path, molecules_data):
+    with open(csv_path, mode='a') as csv_file:
+        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score"]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        for molecule_data in molecules_data:
+            loss_value = molecule_data["loss_value"]
+            QED = molecule_data["metrics"]["QED"]
+            SA = molecule_data["metrics"]["SA"]
+            docking_score = molecule_data["metrics"]["Docking score"]
+            sdf_path = molecule_data["sdf_path"]
+            writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score})
+
 
 def main():
     parser = get_parser()
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO,
+    logging.basicConfig(level=logging.info,
                         format="%(asctime)s [%(levelname)s] %(message)s")
 
-    # Load configuration file
+    # load configuration file
     config_data = config.load_config(args.config)
 
     # Initialize parameters
@@ -68,13 +129,19 @@ def main():
     num_variants = args.num_variants
     batch_size = args.batch_size
     num_confs = args.num_confs
-    workdir = Path(args.workdir).resolve()
-    savedir = Path(args.savedir).resolve()
+    workdir = Path(args.experiment_name).resolve() / "workdir"
+    savedir = Path(args.experiment_name).resolve() / "results"
+
+    # Create directories
+    os.makedirs(workdir, exist_ok=True)
+    os.makedirs(savedir, exist_ok=True)
+
+    # Create docking csv
+    create_docking_csv(Path(savedir / "docking_results.csv"))
 
     # Instantiate STONED
     stoned = STONED(config_data=config_data)
 
-    # Initialize Uni-Dock
     best_molecule = {"sdf_path": ligand_path,
                  "loss_value": float('-inf'),
                     "metrics": {}}
@@ -90,41 +157,16 @@ def main():
             num_conformers=num_confs,
         )
 
-        unidock = UniDock(
-            receptor=receptor_path,
-            ligands=generated_molecules_sdf_list,
-            center_x=center_coords[0],
-            center_y=center_coords[1],
-            center_z=center_coords[2],
-            size_x=box_sizes[0],
-            size_y=box_sizes[1],
-            size_z=box_sizes[2],
-            workdir=workdir,
-        )
-
         # 2. Perform Docking and Score Evaluation
-        unidock.docking(
-            scoring_function="vina",
-            num_modes=3,
-            batch_size=batch_size,
-            save_dir = Path(savedir / f"docking_{i+1}").resolve(),
-            docking_dir_name=f"docking_{i+1}",
-        )
-        scored_molecules_list  =  [Path(savedir / f"docking_{i+1}" / f"{Path(mol_path).stem}.sdf") for mol_path in generated_molecules_sdf_list]
+        scored_molecules_list = basic_docking(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, generated_molecules_sdf_list, i)
 
-        # Each entry contains docking, QED, SA etc. scores.
-        molecules_data: List[Dict] = []
-        for scored_mol_path in scored_molecules_list:
-            loss_value, metrics = calculate_loss(
-                sdf_file=scored_mol_path, config_data=config_data)
+        # 3. Calculate loss for each molecule
+        molecules_data = score_molecules(scored_molecules_list, config_data)
 
-            molecules_data.append(
-                {"sdf_path": scored_mol_path,
-                 "loss_value": loss_value,
-                    "metrics": metrics}
-            )
+        # 4. Save docking results to csv
+        add_docking_csv_results(Path(savedir / "docking_results.csv"), molecules_data)
 
-        # 3. Find best performing molecule from the current batch
+        # 5. Find best performing molecule from the current batch
         if molecules_data:
             best_current_molecule = max(
                 molecules_data, key=lambda mol: mol["loss_value"])
