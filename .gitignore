@@ -162,3 +162,4 @@ cython_debug/
 #.idea/
 iterative_docking_results 
 iterative_docking_workdir
+experiments
