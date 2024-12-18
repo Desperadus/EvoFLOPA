@@ -49,19 +49,21 @@ def get_parser():
                         default="config.json", help="config_file")
     parser.add_argument("-bs", "--batch_size", type=int, default=512,
                         help="Batch size for docking in unidock")
-    parser.add_argument("-nv", "--num_variants", type=int, default=10,
+    parser.add_argument("-nv", "--num_variants", type=int, default=32,
                         help="Number of variants to generate in each iteration.")
-    parser.add_argument("-dp", "--docking_paralellism", type=int, default=4,
+    parser.add_argument("-dt", "--docking_threads", type=int, default=4,
                         help="Number of docking tasks to run in parallel.")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Verbose mode.")
-    parser.add_argument("-tnh", "--top_n_history", type=int, default=100,
+    parser.add_argument("-tnh", "--top_n_history", type=int, default=25,
                         help="Number of best molecules to consider for selection.")
+    parser.add_argument("-temp", "--temperature", type=float, default=0.666,
+                        help="Temperature molecule selection")
 
     return parser
 
 
-def select_seed_molecule(best_molecules_history, top_k=100, temperature=1.0, verbose=False):
+def select_seed_molecule(best_molecules_history, args):
     """
     Select a seed molecule from a list of previously known good molecules.
     The selection probability is weighted by their 'loss_value'.
@@ -76,14 +78,14 @@ def select_seed_molecule(best_molecules_history, top_k=100, temperature=1.0, ver
     # Sort molecules by score (descending)
     sorted_molecules = sorted(best_molecules_history, key=lambda x: x["loss_value"], reverse=True)
     # Consider only the top_k best molecules
-    top_mols = sorted_molecules[:top_k]
+    top_mols = sorted_molecules[:args.top_n_history]
 
     # Extract scores and compute a softmax distribution
     scores = np.array([m["loss_value"] for m in top_mols])
     # Softmax probabilities
-    probs = np.exp(scores / temperature) / np.sum(np.exp(scores / temperature))
+    probs = np.exp(scores / args.temperature) / np.sum(np.exp(scores / args.temperature))
 
-    if verbose:
+    if args.verbose:
         print("Scores:", scores)
         print("Probs:", probs)
 
@@ -137,14 +139,14 @@ def score_molecules(scored_molecules_list, config_data):
 # Creates a csv for the docking experiment, where each row contains the molecule's name, docking score, QED, SA etc.
 def create_docking_csv(csv_path):
     with open(csv_path, mode='w', newline='') as csv_file:
-        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score"]
+        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score", "Iteration", "Seed"]
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
 
 
-def add_docking_csv_results(csv_path, molecules_data):
+def add_docking_csv_results(csv_path, molecules_data, iteration, seed):
     with open(csv_path, mode='a', newline='') as csv_file:
-        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score"]
+        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score", "Iteration", "Seed"]
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         for molecule_data in molecules_data:
             loss_value = molecule_data["loss_value"]
@@ -152,13 +154,13 @@ def add_docking_csv_results(csv_path, molecules_data):
             SA = molecule_data["metrics"].get("SA", "")
             docking_score = molecule_data["metrics"].get("Docking score", "")
             sdf_path = molecule_data["sdf_path"]
-            writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score})
+            writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score, "Iteration": iteration, "Seed": seed})
 
 
-def producer_task(stoned, best_molecules_history, generation_output_queue, num_variants, num_confs, iteration, workdir):
+def producer_task(stoned, best_molecules_history, generation_output_queue, num_variants, num_confs, iteration, workdir, args):
     try:
         # Select a seed molecule from history
-        seed_mol = select_seed_molecule(best_molecules_history)
+        seed_mol = select_seed_molecule(best_molecules_history, args)
     except ValueError as e:
         logging.error(f"Producer Task Error: {e}")
         return
@@ -171,7 +173,7 @@ def producer_task(stoned, best_molecules_history, generation_output_queue, num_v
         num_conformers=num_confs
     )
     # Put generated molecules into a queue for docking
-    generation_output_queue.put((iteration, generated_molecules))
+    generation_output_queue.put((iteration, generated_molecules, seed_mol["sdf_path"]))
 
 
 def docking_task(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, molecule_list, iteration):
@@ -194,20 +196,20 @@ def consumer_task(generation_output_queue, docking_params, config_data, best_mol
     # Acquire the semaphore before starting docking
     with docking_semaphore:
         # Wait for the next batch of generated molecules
-        iteration_generated, generated_molecules_sdf_list = generation_output_queue.get()  # Blocks if empty
+        iteration_generated, generated_molecules_sdf_list, seed_mol = generation_output_queue.get()  # Blocks if empty
         logging.info(f"Consumer: Docking molecules for iteration {iteration_generated}, queue size: {generation_output_queue.qsize()}")
 
         # Perform docking and scoring
         logging.info(f"Iteration {iteration_generated}: Docking {len(generated_molecules_sdf_list)} molecules")
         scored_molecules_list = basic_docking(**docking_params, generated_molecules_sdf_list=generated_molecules_sdf_list, iteration=iteration_generated)
         molecules_data = score_molecules(scored_molecules_list, config_data)
-        add_docking_csv_results(csv_path, molecules_data)
+        add_docking_csv_results(csv_path, molecules_data, iteration, seed_mol)
 
         # Update best molecule history
-        
+
         if molecules_data:
             best_current = max(molecules_data, key=lambda m: m["loss_value"])
-            if best_current["loss_value"] > best_molecules_history[-1]["loss_value"]:
+            if best_current["loss_value"] > min([m["loss_value"] for m in best_molecules_history]):
                 best_molecules_history.append(best_current)
             logging.info(f"Iteration {iteration_generated}: Best molecule score {best_current['loss_value']} at {best_current['sdf_path']}, with metrics {best_current['metrics']}")
         else:
@@ -254,12 +256,12 @@ def main():
     }]
 
     # Initialize semaphore to limit docking tasks to
-    docking_semaphore = threading.Semaphore(args.docking_paralellism)
+    docking_semaphore = threading.Semaphore(args.docking_threads)
 
     with ThreadPoolExecutor() as executor:
         # Launch initial producer task for iteration 0
         executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue,
-                        args.num_variants, args.num_confs, 0, workdir)
+                        args.num_variants, args.num_confs, 0, workdir, args)
 
         for i in range(args.num_iterations):
             # Launch consumer task for docking
@@ -277,7 +279,7 @@ def main():
             # Launch next producer task for iteration i+1
             if i < args.num_iterations - 1:
                 executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue,
-                                args.num_variants, args.num_confs, i+1, workdir)
+                                args.num_variants, args.num_confs, i+1, workdir, args)
 
     logging.info("Optimization finished!")
 
