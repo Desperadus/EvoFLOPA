@@ -1,5 +1,5 @@
 from rdkit import Chem
-from rdkit.Chem import Descriptors, QED
+from rdkit.Chem import QED
 from typing import List
 from utils import get_docking_score
 import logging
@@ -9,6 +9,10 @@ import os
 import sys
 sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
 import sascorer
+
+#suppress rdkit warnings
+from rdkit import RDLogger
+RDLogger.DisableLog('rdApp.*')
 
 def calculate_loss(sdf_file: str, config_data: dict) -> float:
     """Calculates a loss score based on SA, QED, and docking scores."""
@@ -26,7 +30,7 @@ def calculate_loss(sdf_file: str, config_data: dict) -> float:
             get_docking_score(sdf_file)*-1
 
         loss_value = sa_score + qed_score + docking_score
-        return loss_value, {"SA": real_sa_score, "QED": real_qed_score, "Docking": docking_score, "Adjusted SA": sa_score, "Adjusted QED": qed_score}
+        return loss_value, {"SA": real_sa_score, "QED": real_qed_score, "Docking score": docking_score, "Adjusted SA": sa_score, "Adjusted QED": qed_score}
     except Exception as e:
         logging.error(f"Error during loss calculation of {sdf_file}: {e}")
-        return float('-inf')  # If an error occurs, return the worst loss value
+        return float('-inf'), {"SA": float('-inf'), "QED": float('-inf'), "Docking score": float('-inf'), "Adjusted SA": float('-inf'), "Adjusted QED": float('-inf')}
