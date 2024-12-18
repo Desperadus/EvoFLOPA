@@ -133,18 +133,26 @@ class STONED:
 
                 mutated_mol = Chem.MolFromSmiles(mutated_smiles)
                 if mutated_mol is None:
+                    logging.warning(f"Invalid SMILES for molecule {i+1}: {mutated_smiles}")
                     return None
                 
                 mutated_mol = Chem.AddHs(mutated_mol)
                 mutated_mol.SetProp("SMILES", mutated_smiles)
                 mutated_mol.SetProp("SELFIE", mutated_selfie)
 
+                # Check if molecule is valid
+                try:
+                    Chem.SanitizeMol(mutated_mol)
+                except:
+                    logging.warning(f"Sanitization failed for molecule {i+1}")
+                    return None
+
                 # Add conformers
                 for _ in range(num_conformers):
                     embed_status = AllChem.EmbedMolecule(mutated_mol, AllChem.ETKDG())
                     if embed_status != 0:
                         logging.warning(f"Embedding failed for molecule {i+1}")
-                        continue
+                        return None
                     AllChem.MMFFOptimizeMolecule(mutated_mol)
 
                 file_name = f"generated_molecule_{i+1}.sdf"
