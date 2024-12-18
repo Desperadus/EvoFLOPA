@@ -50,7 +50,7 @@ def get_parser():
 
     return parser
 
-def basic_docking(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, generated_molecules_sdf_list, index):
+def basic_docking(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, generated_molecules_sdf_list, iteration):
     unidock = UniDock(
             receptor=receptor_path,
             ligands=generated_molecules_sdf_list,
@@ -68,10 +68,10 @@ def basic_docking(receptor_path, ligand_path, center_coords, box_sizes, workdir,
         scoring_function="vina",
         num_modes=3,
         batch_size=batch_size,
-        save_dir = Path(savedir / f"docking_{index+1}").resolve(),
-        docking_dir_name=f"docking_{index+1}",
+        save_dir = Path(savedir / f"docking_{iteration+1}").resolve(),
+        docking_dir_name=f"docking_{iteration+1}",
     )
-    scored_molecules_list  =  [Path(savedir / f"docking_{index+1}" / f"{Path(mol_path).stem}.sdf") for mol_path in generated_molecules_sdf_list]
+    scored_molecules_list  =  [Path(savedir / f"docking_{iteration+1}" / f"{Path(mol_path).stem}.sdf") for mol_path in generated_molecules_sdf_list]
 
     return scored_molecules_list
 
