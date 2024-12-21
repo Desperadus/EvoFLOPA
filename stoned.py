@@ -100,7 +100,8 @@ class STONED:
         seed_molecule_path: Path,
         output_dir: Path,
         num_molecules: int = 10,
-        num_conformers: int = 1
+        num_conformers: int = 1,
+        all_docked_selfies: set[str] = None
                         ) -> List[Path]:
         """Generates a set of molecules using STONED with conformer optimization and parallel processing."""
         os.makedirs(output_dir, exist_ok=True)
@@ -130,6 +131,10 @@ class STONED:
                 mutated_selfie, mutated_smiles = self.mutate_selfie(
                     starting_selfie, max_molecules_len=len_random_struct
                 )
+                if mutated_selfie in all_docked_selfies:
+                    # logging.info(f"Skipping molecule with selfie {mutated_selfie} as it has already been docked")
+                    return None
+
 
                 mutated_mol = Chem.MolFromSmiles(mutated_smiles)
                 if mutated_mol is None:
@@ -148,19 +153,26 @@ class STONED:
                     return None
 
                 # Add conformers
-                for _ in range(num_conformers):
+                conformer_paths = []
+                for conf_id in range(num_conformers):
                     embed_status = AllChem.EmbedMolecule(mutated_mol, AllChem.ETKDG())
                     if embed_status != 0:
-                        logging.warning(f"Embedding failed for molecule {i+1}")
-                        return None
+                        logging.warning(f"Embedding failed for molecule {i+1}, conformer {conf_id+1}")
+                        continue
                     AllChem.MMFFOptimizeMolecule(mutated_mol)
 
-                file_name = f"generated_molecule_{i+1}.sdf"
-                file_path = output_dir / file_name
-                with Chem.SDWriter(str(file_path)) as writer:
-                    writer.write(mutated_mol)
-                return file_path
+                    # Create a copy of the molecule with just this conformer
+                    conf_mol = Chem.Mol(mutated_mol)
+                    
+                    file_name = f"generated_molecule_{i+1}_conf_{conf_id+1}.sdf"
+                    file_path = output_dir / file_name
+                    with Chem.SDWriter(str(file_path)) as writer:
+                        writer.write(conf_mol)
+                    conformer_paths.append(file_path)
+                
+                return conformer_paths if conformer_paths else None
             except:
+                logging.warning(f"Failed to generate molecule {i+1}")
                 return None
 
         with ThreadPoolExecutor() as executor:
@@ -168,6 +180,6 @@ class STONED:
             for future in as_completed(futures):
                 result = future.result()
                 if result:
-                    generated_molecules.append(result)
+                    generated_molecules.extend([path for path in result if path])
 
         return generated_molecules
