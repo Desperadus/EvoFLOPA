@@ -57,7 +57,7 @@ def get_parser():
                         help="Number of docking tasks to run in parallel.")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Verbose mode.")
-    parser.add_argument("-tnh", "--top_n_history", type=int, default=25,
+    parser.add_argument("-tnh", "--top_n_history", type=int, default=125,
                         help="Number of best molecules to consider for selection.")
     parser.add_argument("-temp", "--temperature", type=float, default=0.666,
                         help="Temperature molecule selection")
@@ -160,7 +160,7 @@ def add_docking_csv_results(csv_path, molecules_data, iteration, seed, all_docke
             SA = molecule_data["metrics"].get("SA", "")
             docking_score = molecule_data["metrics"].get("Docking score", "")
             sdf_path = molecule_data["sdf_path"]
-            selfie = Chem.SDMolSupplier(sdf_path, removeHs=True)[0].GetProp("SELFIE")
+            selfie = molecule_data["metrics"].get("SELFIE", "")
             all_docked_selfies.add(selfie)
             writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score, "Iteration": iteration, "Seed": seed, "SELFIE": selfie})
 
@@ -171,6 +171,7 @@ def producer_task(stoned, best_molecules_history, generation_output_queue, itera
     logging.info(f"Iteration {iteration}: Generating {args.num_variants} molecules from {seed_mol['sdf_path']}")
     
     output_dir = Path(args.experiment_name).resolve() / "workdir" / f"generation_{iteration+1}"
+    output_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
     
     generated_molecules = stoned.generate_molecules(
         seed_molecule_path=seed_mol["sdf_path"],
@@ -183,12 +184,9 @@ def producer_task(stoned, best_molecules_history, generation_output_queue, itera
 
 
 def consumer_task(generation_output_queue, args, config_data, best_molecules_history, csv_path, iteration, docking_semaphore, all_docked_selfies):
-    # Acquire the semaphore before starting docking
     with docking_semaphore:
-        # Wait for the next batch of generated molecules
         iteration_generated, generated_molecules_sdf_list, seed_mol = generation_output_queue.get()  # Blocks if empty
 
-        # Perform docking and scoring
         logging.info(f"Iteration {iteration_generated}: Docking {len(generated_molecules_sdf_list)} molecules")
         scored_molecules_list = basic_docking(args, generated_molecules_sdf_list=generated_molecules_sdf_list, iteration=iteration_generated)
         molecules_data = score_molecules(scored_molecules_list, config_data)
