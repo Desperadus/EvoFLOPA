@@ -410,6 +410,8 @@ class STONED:
 
         mols_from_paths = []    
         for smi, selfie in zip(merged_paths_smiles, merged_paths_selfies):
+            if selfie in all_docked_selfies:
+                continue
             mol = Chem.MolFromSmiles(smi)
             try:
                 Chem.SanitizeMol(mol)

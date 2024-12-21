@@ -29,8 +29,11 @@ def get_parser():
 
     parser.add_argument("-r", "--receptor", type=str,
                         required=True, help="Path to the receptor PDB file.")
-    parser.add_argument("-l", "--ligand", type=str, required=True,
+    parser.add_argument("-l", "--ligand", type=str,
                         help="Path to the starting ligand SDF file.")
+    # Path to multiple ligands
+    parser.add_argument("-ls", "--ligands", type=str, nargs='+',
+                        help="Paths to the starting ligands SDF files.")
     parser.add_argument("-cx", "--center_x", type=float, required=True,
                         help="Center X coordinate for the docking box.")
     parser.add_argument("-cy", "--center_y", type=float, required=True,
@@ -249,6 +252,8 @@ def main():
 
     logging.basicConfig(level=logging.INFO,  # Corrected logging level
                         format="%(asctime)s [%(levelname)s] %(message)s")
+    if args.ligand is None and args.ligands is None:
+        raise ValueError("Provide either a single ligand or multiple ligands for the experiment.")
 
     # Load configuration file
     config_data = config.load_config(args.config)
@@ -266,11 +271,18 @@ def main():
     # Initialize bounded queue
     generation_output_queue = Queue(maxsize=args.docking_threads*2)
 
-    best_molecules_history = [{
-        "sdf_path": args.ligand,
-        "loss_value": 0,
-        "metrics": {}
-    }]
+    if args.ligand:
+        best_molecules_history = [{
+            "sdf_path": args.ligand,
+            "loss_value": 10,
+            "metrics": {}
+        }]
+    else:
+        best_molecules_history = [{
+            "sdf_path": ligand,
+            "loss_value": 10,
+            "metrics": {}
+        } for ligand in args.ligands]
 
     # Initialize semaphore to limit docking tasks to
     docking_semaphore = threading.Semaphore(args.docking_threads)
