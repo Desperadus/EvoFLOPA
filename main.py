@@ -11,6 +11,8 @@ import config
 from loss import calculate_loss
 from stoned import STONED
 
+from rdkit import Chem
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 from typing import List, Dict
@@ -75,6 +77,10 @@ def select_seed_molecule(best_molecules_history, args):
     if not best_molecules_history:
         raise ValueError("No best molecules available for selection.")
 
+    # Ensure loss_value exists for first molecule
+    if "loss_value" not in best_molecules_history[0]:
+        best_molecules_history[0]["loss_value"] = 0
+
     # Sort molecules by score (descending)
     sorted_molecules = sorted(best_molecules_history, key=lambda x: x["loss_value"], reverse=True)
     # Consider only the top_k best molecules
@@ -93,28 +99,28 @@ def select_seed_molecule(best_molecules_history, args):
     return chosen_molecule
 
 
-def basic_docking(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, generated_molecules_sdf_list, iteration):
+def basic_docking(args, generated_molecules_sdf_list, iteration):
     unidock = UniDock(
-        receptor=receptor_path,
+        receptor=Path(args.receptor).resolve(),
         ligands=generated_molecules_sdf_list,
-        center_x=center_coords[0],
-        center_y=center_coords[1],
-        center_z=center_coords[2],
-        size_x=box_sizes[0],
-        size_y=box_sizes[1],
-        size_z=box_sizes[2],
-        workdir=workdir,
+        center_x=args.center_x,
+        center_y=args.center_y,
+        center_z=args.center_z,
+        size_x=args.size_x,
+        size_y=args.size_y,
+        size_z=args.size_z,
+        workdir=Path(args.experiment_name).resolve() / "workdir",
     )
 
     # Perform Docking and Score Evaluation
     unidock.docking(
         scoring_function="vina",
         num_modes=3,
-        batch_size=batch_size,
-        save_dir=Path(savedir / f"docking_{iteration+1}").resolve(),
+        batch_size=args.batch_size,
+        save_dir=Path(args.experiment_name).resolve() / "results" / f"docking_{iteration+1}",
         docking_dir_name=f"docking_{iteration+1}",
     )
-    scored_molecules_list = [Path(savedir / f"docking_{iteration+1}" / f"{Path(mol_path).stem}.sdf") for mol_path in generated_molecules_sdf_list]
+    scored_molecules_list = [Path(args.experiment_name).resolve() / "results" / f"docking_{iteration+1}" / f"{Path(mol_path).stem}.sdf" for mol_path in generated_molecules_sdf_list]
 
     return scored_molecules_list
 
@@ -139,14 +145,14 @@ def score_molecules(scored_molecules_list, config_data):
 # Creates a csv for the docking experiment, where each row contains the molecule's name, docking score, QED, SA etc.
 def create_docking_csv(csv_path):
     with open(csv_path, mode='w', newline='') as csv_file:
-        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score", "Iteration", "Seed"]
+        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score", "Iteration", "Seed", "SELFIE"]
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
 
 
-def add_docking_csv_results(csv_path, molecules_data, iteration, seed):
+def add_docking_csv_results(csv_path, molecules_data, iteration, seed, all_docked_selfies):
     with open(csv_path, mode='a', newline='') as csv_file:
-        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score", "Iteration", "Seed"]
+        fieldnames = ["sdf_path", "loss_value", "QED", "SA", "Docking score", "Iteration", "Seed", "SELFIE"]
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         for molecule_data in molecules_data:
             loss_value = molecule_data["loss_value"]
@@ -154,59 +160,42 @@ def add_docking_csv_results(csv_path, molecules_data, iteration, seed):
             SA = molecule_data["metrics"].get("SA", "")
             docking_score = molecule_data["metrics"].get("Docking score", "")
             sdf_path = molecule_data["sdf_path"]
-            writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score, "Iteration": iteration, "Seed": seed})
+            selfie = Chem.SDMolSupplier(sdf_path, removeHs=True)[0].GetProp("SELFIE")
+            all_docked_selfies.add(selfie)
+            writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score, "Iteration": iteration, "Seed": seed, "SELFIE": selfie})
 
 
-def producer_task(stoned, best_molecules_history, generation_output_queue, num_variants, num_confs, iteration, workdir, args):
-    try:
-        # Select a seed molecule from history
-        seed_mol = select_seed_molecule(best_molecules_history, args)
-    except ValueError as e:
-        logging.error(f"Producer Task Error: {e}")
-        return
-
-    output_dir = workdir / f"generation_{iteration+1}"
+def producer_task(stoned, best_molecules_history, generation_output_queue, iteration, all_docked_selfies, args):
+    # Get seed molecule before logging to avoid reference error
+    seed_mol = select_seed_molecule(best_molecules_history, args)
+    logging.info(f"Iteration {iteration}: Generating {args.num_variants} molecules from {seed_mol['sdf_path']}")
+    
+    output_dir = Path(args.experiment_name).resolve() / "workdir" / f"generation_{iteration+1}"
+    
     generated_molecules = stoned.generate_molecules(
         seed_molecule_path=seed_mol["sdf_path"],
         output_dir=output_dir,
-        num_molecules=num_variants,
-        num_conformers=num_confs
+        num_molecules=args.num_variants,
+        num_conformers=args.num_confs,
+        all_docked_selfies=all_docked_selfies
     )
-    # Put generated molecules into a queue for docking
     generation_output_queue.put((iteration, generated_molecules, seed_mol["sdf_path"]))
 
 
-def docking_task(receptor_path, ligand_path, center_coords, box_sizes, workdir, savedir, num_confs, batch_size, molecule_list, iteration):
-    scored_molecules_list = basic_docking(
-        receptor_path=receptor_path,
-        ligand_path=ligand_path,
-        center_coords=center_coords,
-        box_sizes=box_sizes,
-        workdir=workdir,
-        savedir=savedir,
-        num_confs=num_confs,
-        batch_size=batch_size,
-        generated_molecules_sdf_list=molecule_list,
-        iteration=iteration
-    )
-    return scored_molecules_list
-
-
-def consumer_task(generation_output_queue, docking_params, config_data, best_molecules_history, csv_path, iteration, docking_semaphore):
+def consumer_task(generation_output_queue, args, config_data, best_molecules_history, csv_path, iteration, docking_semaphore, all_docked_selfies):
     # Acquire the semaphore before starting docking
     with docking_semaphore:
         # Wait for the next batch of generated molecules
         iteration_generated, generated_molecules_sdf_list, seed_mol = generation_output_queue.get()  # Blocks if empty
-        logging.info(f"Consumer: Docking molecules for iteration {iteration_generated}, queue size: {generation_output_queue.qsize()}")
 
         # Perform docking and scoring
         logging.info(f"Iteration {iteration_generated}: Docking {len(generated_molecules_sdf_list)} molecules")
-        scored_molecules_list = basic_docking(**docking_params, generated_molecules_sdf_list=generated_molecules_sdf_list, iteration=iteration_generated)
+        scored_molecules_list = basic_docking(args, generated_molecules_sdf_list=generated_molecules_sdf_list, iteration=iteration_generated)
         molecules_data = score_molecules(scored_molecules_list, config_data)
-        add_docking_csv_results(csv_path, molecules_data, iteration, seed_mol)
+        # Note that this function also adds selfie to all_docked_selfies
+        add_docking_csv_results(csv_path, molecules_data, iteration, seed_mol, all_docked_selfies)
 
         # Update best molecule history
-
         if molecules_data:
             best_current = max(molecules_data, key=lambda m: m["loss_value"])
             if best_current["loss_value"] > min([m["loss_value"] for m in best_molecules_history]):
@@ -234,20 +223,10 @@ def main():
     create_docking_csv(Path(savedir / "docking_results.csv"))
 
     stoned = STONED(config_data=config_data)
+    all_docked_selfies = set() # Set of docked molecules to avoid duplicates
 
     # Initialize bounded queue
     generation_output_queue = Queue(maxsize=8)
-
-    docking_params = {
-        "receptor_path": Path(args.receptor).resolve(),
-        "ligand_path": Path(args.ligand).resolve(),
-        "center_coords": (args.center_x, args.center_y, args.center_z),
-        "box_sizes": (args.size_x, args.size_y, args.size_z),
-        "workdir": workdir,
-        "savedir": savedir,
-        "num_confs": args.num_confs,
-        "batch_size": args.batch_size
-    }
 
     best_molecules_history = [{
         "sdf_path": args.ligand,
@@ -260,26 +239,25 @@ def main():
 
     with ThreadPoolExecutor() as executor:
         # Launch initial producer task for iteration 0
-        executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue,
-                        args.num_variants, args.num_confs, 0, workdir, args)
+        executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue, 0, all_docked_selfies, args)
 
         for i in range(args.num_iterations):
             # Launch consumer task for docking
             executor.submit(
                 consumer_task,
                 generation_output_queue,
-                docking_params,
+                args,
                 config_data,
                 best_molecules_history,
                 Path(savedir / "docking_results.csv"),
                 i,
-                docking_semaphore  # Pass the semaphore to consumer_task
+                docking_semaphore,  # Pass the semaphore to consumer_task
+                all_docked_selfies
             )
 
             # Launch next producer task for iteration i+1
             if i < args.num_iterations - 1:
-                executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue,
-                                args.num_variants, args.num_confs, i+1, workdir, args)
+                executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue, i+1, all_docked_selfies, args)
 
     logging.info("Optimization finished!")
 
