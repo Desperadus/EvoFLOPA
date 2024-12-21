@@ -274,24 +274,11 @@ class STONED:
         
         # Obtain similarity scores
         path_smiles = [decoder(x) for x in paths_selfies]
-        path_fp_scores = self.get_fp_scores(path_smiles, target_smile)
-        smiles_path = []
-        filtered_path_score = []
         
-        if filter_path: 
-            for i in range(1, len(path_fp_scores)-1): 
-                if i == 1: 
-                    filtered_path_score.append(path_fp_scores[i])
-                    smiles_path.append(path_smiles[i])
-                    continue
-                if filtered_path_score[-1] < path_fp_scores[i]:
-                    filtered_path_score.append(path_fp_scores[i])
-                    smiles_path.append(path_smiles[i])
-        
-        return path_smiles, path_fp_scores, smiles_path, filtered_path_score
+        return path_smiles, paths_selfies, None, None
 
 
-    def get_compr_paths(self, starting_smile, target_smile, num_tries, num_random_samples, collect_bidirectional):
+    def get_compr_paths(self, starting_smile, target_smile, num_tries, num_random_samples):
         ''' Obtaining multiple paths/chemical paths from starting_smile to target_smile. 
         
         Parameters:
@@ -309,6 +296,7 @@ class STONED:
         target_smile_rand_ord   = self.get_random_smiles(target_smile,   num_random_samples=num_random_samples)
         
         smiles_paths_dir1 = [] # All paths from starting_smile -> target_smile
+        selfies_paths_dir1 = [] # All paths from starting_smile -> target_smile
         for smi_start in starting_smile_rand_ord: 
             for smi_target in target_smile_rand_ord: 
                 
@@ -316,55 +304,35 @@ class STONED:
                     raise Exception('Invalid structures')
                     
                 for _ in range(num_tries): 
-                    path, _, _, _ = self.obtain_path(smi_start, smi_target, filter_path=False)
-                    smiles_paths_dir1.append(path)
+                    path_smiles, path_selfies, _, _ = self.obtain_path(smi_start, smi_target, filter_path=False)
+                    smiles_paths_dir1.append(path_smiles)
+                    selfies_paths_dir1.append(path_selfies)
         
-        smiles_paths_dir2 = [] # All paths from starting_smile -> target_smile
-        if collect_bidirectional == True: 
-            starting_smile_rand_ord = self.get_random_smiles(target_smile, num_random_samples=num_random_samples)
-            target_smile_rand_ord   = self.get_random_smiles(starting_smile,   num_random_samples=num_random_samples)
-            
-            for smi_start in starting_smile_rand_ord: 
-                for smi_target in target_smile_rand_ord: 
-                    
-                    if Chem.MolFromSmiles(smi_start) == None or Chem.MolFromSmiles(smi_target) == None: 
-                        raise Exception('Invalid structures')
-            
-                    for _ in range(num_tries): 
-                        path, _, _, _ = self.obtain_path(smi_start, smi_target, filter_path=True)
-                        smiles_paths_dir2.append(path)
                         
-        return smiles_paths_dir1, smiles_paths_dir2
+        return smiles_paths_dir1, selfies_paths_dir1
 
-    def generate_molecules(
-        self,
-        seed_molecule_path: List[Path],
-        output_dir: Path,
-        num_molecules: int = 10,
-        num_conformers: int = 1,
-        all_docked_selfies: set[str] = None
-                        ) -> List[Path]:
-        """Generates a set of molecules using STONED with conformer optimization and parallel processing."""
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Load Initial Molecule
-        mols = Chem.SDMolSupplier(str(seed_molecule_path[0]), removeHs=True)
-        if not mols or not mols[0]:
-            raise Exception(f"Cannot obtain valid molecule using {seed_molecule_path}")
-        mol1 = mols[0]
-
-        if len(seed_molecule_path) > 1:
-            # Load second molecule
-            mols = Chem.SDMolSupplier(str(seed_molecule_path[1]), removeHs=True)
-            if not mols or not mols[0]:
-                raise Exception(f"Cannot obtain valid molecule using {seed_molecule_path}")
-            mol2 = mols[0]
-
-        if mol1.HasProp("SELFIE"):
-            starting_selfie = mol1.GetProp("SELFIE")
+    def get_SA_scores(self, mols): 
+        '''Calculate the SA score for a list of molecules
+        
+        Parameters:
+        mols (list) : A list of rdkit mol objects
+        
+        Returns:
+        sa_scores (list of floats) : List of SA scores
+        '''
+        sa_scores = []
+        for mol in mols: 
+            sa_scores.append(sascorer.calculateScore(mol))
+        return sa_scores
+    
+    def generate_variations_via_mutations(self, mol, num_conformers, num_molecules, output_dir, all_docked_selfies):
+        '''Generate variations of a molecule using mutations
+        '''
+        if mol.HasProp("SELFIE"):
+            starting_selfie = mol.GetProp("SELFIE")
         else:
             # Encode with SELFIE string
-            starting_smiles = Chem.MolToSmiles(mol1, isomericSmiles=True, canonical=True)
+            starting_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
             starting_selfie = encoder(starting_smiles)
 
         # Encode with SELFIE string
@@ -429,4 +397,118 @@ class STONED:
                 if result:
                     generated_molecules.extend([path for path in result if path])
 
+        return generated_molecules 
+
+
+    def generate_children_via_breeding(self, mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies):
+        mol1_smiles = Chem.MolToSmiles(mol1, isomericSmiles=True, canonical=True)
+        mol2_smiles = Chem.MolToSmiles(mol2, isomericSmiles=True, canonical=True)
+
+        paths_smiles, paths_selfies = self.get_compr_paths(mol1_smiles, mol2_smiles, num_tries=1, num_random_samples=2)
+        merged_paths_smiles = [item for sublist in paths_smiles for item in sublist]
+        merged_paths_selfies = [item for sublist in paths_selfies for item in sublist]
+
+        mols_from_paths = []    
+        for smi, selfie in zip(merged_paths_smiles, merged_paths_selfies):
+            mol = Chem.MolFromSmiles(smi)
+            try:
+                Chem.SanitizeMol(mol)
+            except:
+                logging.warning(f"Sanitization failed for molecule {i+1}")
+                continue
+            mol.SetProp("SMILES", smi)
+            mol.SetProp("SELFIE", selfie)
+            mols_from_paths.append(mol)
+
+        sa_scores = self.get_SA_scores(mols_from_paths)
+        # print(sa_scores)
+        # Sort by SA score smaller then 4
+        sorted_indices = np.argsort(sa_scores)
+        mols_from_paths = [mols_from_paths[i] for i in sorted_indices if sa_scores[i] < 4]
+        mols_from_paths = mols_from_paths[:min(num_molecules, len(mols_from_paths))]
+
+        def create_conformers(mol, i):
+            mol = Chem.AddHs(mol)
+            try:
+                # Add conformers
+                conformer_paths = []
+                for conf_id in range(num_conformers):
+                    embed_status = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+                    if embed_status != 0:
+                        logging.warning(f"Embedding failed for molecule {i+1}, conformer {conf_id+1}")
+                        continue
+                    AllChem.MMFFOptimizeMolecule(mol)
+
+                    # Create a copy of the molecule with just this conformer
+                    conf_mol = Chem.Mol(mol)
+                    
+                    file_name = f"generated_molecule_{i+1}_conf_{conf_id+1}.sdf"
+                    file_path = output_dir / file_name
+                    with Chem.SDWriter(str(file_path)) as writer:
+                        writer.write(conf_mol)
+                    conformer_paths.append(file_path)
+                
+                return conformer_paths if conformer_paths else None
+            except:
+                logging.warning(f"Failed to generate molecule {i+1}")
+                return None
+
+        generated_molecules = []
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(create_conformers, mol, i) for i, mol in enumerate(mols_from_paths)]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    generated_molecules.extend([path for path in result if path])
+
         return generated_molecules
+
+    def generate_molecules(
+        self,
+        seed_molecule_path: List[Path],
+        output_dir: Path,
+        num_molecules: int = 32,
+        num_conformers: int = 1,
+        all_docked_selfies: set[str] = None
+                        ) -> List[Path]:
+        """Generates a set of molecules using STONED with conformer optimization and parallel processing."""
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Load Initial Molecule
+        mols = Chem.SDMolSupplier(str(seed_molecule_path[0]), removeHs=True)
+        if not mols or not mols[0]:
+            raise Exception(f"Cannot obtain valid molecule using {seed_molecule_path}")
+        mol1 = mols[0]
+
+        if len(seed_molecule_path) > 1:
+            # Load second molecule
+            mols = Chem.SDMolSupplier(str(seed_molecule_path[1]), removeHs=True)
+            if not mols or not mols[0]:
+                raise Exception(f"Cannot obtain valid molecule using {seed_molecule_path}")
+            mol2 = mols[0]
+
+
+        # Generate variations for the first molecule
+        if len(seed_molecule_path) == 1:
+            generated_molecules = self.generate_variations_via_mutations(
+                mol1, num_conformers, num_molecules, output_dir, all_docked_selfies
+            )
+        else:
+            # Generate variations for the second molecule
+            generated_molecules = self.generate_children_via_breeding(
+                mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies
+            )
+        return generated_molecules
+
+if __name__ == "__main__":
+    # Example usage
+    config_data = {
+        "sa_weight": 1,
+        "qed_weight": 1,
+        "docking_weight": 1
+    }
+    stoned = STONED(config_data)
+    seed_molecule_path = [Path("examples/TrmD/Compound23_docked.sdf"), Path("examples/TrmD/Compound37_docked.sdf")]
+    output_dir = Path("experiments/generated_molecules")
+    generated_molecules = stoned.generate_molecules(seed_molecule_path, output_dir, num_molecules=32, num_conformers=1)
+    print(len(generated_molecules))
