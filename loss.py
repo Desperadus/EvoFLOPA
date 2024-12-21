@@ -13,6 +13,8 @@ import sascorer
 #suppress rdkit warnings
 from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*')
+lg = RDLogger.logger()
+lg.setLevel(RDLogger.WARNING)
 
 def calculate_loss(sdf_file: str, config_data: dict) -> float:
     """Calculates a loss score based on SA, QED, and docking scores."""

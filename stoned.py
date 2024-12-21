@@ -17,6 +17,8 @@ from rdkit.Chem import MolToSmiles as mol2smi
 from rdkit.DataStructs.cDataStructs import TanimotoSimilarity
 from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*')
+lg = RDLogger.logger()
+lg.setLevel(RDLogger.WARNING)
 
 import Levenshtein
 from Levenshtein import distance, editops
@@ -425,8 +427,9 @@ class STONED:
         sa_scores = self.get_SA_scores(mols_from_paths)
         # print(sa_scores)
         # Sort by SA score smaller then 4
-        sorted_indices = np.argsort(sa_scores)
-        mols_from_paths = [mols_from_paths[i] for i in sorted_indices if sa_scores[i] < 4]
+        # sorted_indices = np.argsort(sa_scores)
+        # mols_from_paths = [mols_from_paths[i] for i in sorted_indices if sa_scores[i] < 4]
+        mols_from_paths = [mols_from_paths[i] for i in range(len(mols_from_paths)) if sa_scores[i] < 4]
         mols_from_paths = mols_from_paths[:min(num_molecules, len(mols_from_paths))]
 
         def create_conformers(mol, i):
