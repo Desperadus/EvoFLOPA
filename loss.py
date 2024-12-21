@@ -17,6 +17,7 @@ RDLogger.DisableLog('rdApp.*')
 def calculate_loss(sdf_file: str, config_data: dict) -> float:
     """Calculates a loss score based on SA, QED, and docking scores."""
     try:
+        # hydrogens are romoved to avoid errors in SA score calculation
         mol = Chem.SDMolSupplier(sdf_file, removeHs=True)[0]
         if mol is None:
             raise ValueError(f'Cannot get molecule {sdf_file}')
