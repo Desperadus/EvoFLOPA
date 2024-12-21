@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, List
-import threading 
+import threading
 
 from unidock_tools.application.mcdock import MultiConfDock
 from unidock_tools.application.unidock_pipeline import UniDock
@@ -20,6 +20,8 @@ from typing import List, Dict
 import csv
 import numpy as np
 
+from rdkit import RDLogger
+RDLogger.DisableLog('rdApp.*')
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -61,11 +63,15 @@ def get_parser():
                         help="Number of best molecules to consider for selection.")
     parser.add_argument("-temp", "--temperature", type=float, default=0.666,
                         help="Temperature molecule selection")
+    parser.add_argument("--breed", action="store_true",
+                        help="Whether to breed molecules or not.")
+    parser.add_argument("--breeding_prob", type=float, default=0.5,
+                        help="Probability of breeding molecules.")
 
     return parser
 
 
-def select_seed_molecule(best_molecules_history, args):
+def select_seed_molecule(best_molecules_history, num_of_molecules, args):
     """
     Select a seed molecule from a list of previously known good molecules.
     The selection probability is weighted by their 'loss_value'.
@@ -77,26 +83,38 @@ def select_seed_molecule(best_molecules_history, args):
     if not best_molecules_history:
         raise ValueError("No best molecules available for selection.")
 
-    # Ensure loss_value exists for first molecule
-    if "loss_value" not in best_molecules_history[0]:
-        best_molecules_history[0]["loss_value"] = 0
+    # Ensure all molecules have a 'loss_value'; default to 0 if missing
+    for molecule in best_molecules_history:
+        if "loss_value" not in molecule:
+            molecule["loss_value"] = 0
 
-    # Sort molecules by score (descending)
+    # Sort molecules by 'loss_value' in descending order
     sorted_molecules = sorted(best_molecules_history, key=lambda x: x["loss_value"], reverse=True)
-    # Consider only the top_k best molecules
+
+    # Consider only the top_n_history best molecules
     top_mols = sorted_molecules[:args.top_n_history]
 
-    # Extract scores and compute a softmax distribution
+    if num_of_molecules > len(top_mols):
+        num_of_molecules = len(top_mols)
+
+    # Extract 'loss_value' scores
     scores = np.array([m["loss_value"] for m in top_mols])
-    # Softmax probabilities
-    probs = np.exp(scores / args.temperature) / np.sum(np.exp(scores / args.temperature))
 
-    if args.verbose:
-        print("Scores:", scores)
-        print("Probs:", probs)
+    # Apply temperature scaling and compute softmax probabilities
+    scaled_scores = scores / args.temperature
+    # To prevent overflow, subtract the max scaled score from all scaled scores
+    scaled_scores -= np.max(scaled_scores)
+    exp_scores = np.exp(scaled_scores)
+    probs = exp_scores / np.sum(exp_scores)
 
-    chosen_molecule = np.random.choice(top_mols, p=probs)
-    return chosen_molecule
+    if num_of_molecules == 1:
+        # Select a single molecule based on the computed probabilities
+        chosen_molecule = np.random.choice(top_mols, p=probs)
+        return [chosen_molecule]
+    else:
+        # Select multiple unique molecules without replacement
+        chosen_molecules = np.random.choice(top_mols, size=num_of_molecules, replace=False, p=probs)
+        return list(chosen_molecules)
 
 
 def basic_docking(args, generated_molecules_sdf_list, iteration):
@@ -165,42 +183,64 @@ def add_docking_csv_results(csv_path, molecules_data, iteration, seed, all_docke
             writer.writerow({"sdf_path": sdf_path, "loss_value": loss_value, "QED": QED, "SA": SA, "Docking score": docking_score, "Iteration": iteration, "Seed": seed, "SELFIE": selfie})
 
 
-def producer_task(stoned, best_molecules_history, generation_output_queue, iteration, all_docked_selfies, args):
+def generate_new_molecules(stoned, best_molecules_history, iteration, all_docked_selfies, args):
     # Get seed molecule before logging to avoid reference error
-    seed_mol = select_seed_molecule(best_molecules_history, args)
-    logging.info(f"Iteration {iteration}: Generating {args.num_variants} molecules from {seed_mol['sdf_path']}")
-    
+    # Decide if we should mutate from seed or breed two molecules
+
+    if args.breed:
+        if np.random.rand() < args.breeding_prob:
+            seed_mols = select_seed_molecule(best_molecules_history, 2, args)
+        else:
+            seed_mols = select_seed_molecule(best_molecules_history, 1, args)
+    else:
+        seed_mols = select_seed_molecule(best_molecules_history, 1, args)
+
     output_dir = Path(args.experiment_name).resolve() / "workdir" / f"generation_{iteration+1}"
     output_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
-    
+
     generated_molecules = stoned.generate_molecules(
-        seed_molecule_path=seed_mol["sdf_path"],
+        seed_molecule_path=[molecule["sdf_path"] for molecule in seed_mols],
         output_dir=output_dir,
         num_molecules=args.num_variants,
         num_conformers=args.num_confs,
         all_docked_selfies=all_docked_selfies
     )
-    generation_output_queue.put((iteration, generated_molecules, seed_mol["sdf_path"]))
+    return generated_molecules, seed_mols[0]
 
 
-def consumer_task(generation_output_queue, args, config_data, best_molecules_history, csv_path, iteration, docking_semaphore, all_docked_selfies):
-    with docking_semaphore:
-        iteration_generated, generated_molecules_sdf_list, seed_mol = generation_output_queue.get()  # Blocks if empty
+def producer_task(stoned, best_molecules_history, generation_output_queue, iteration, all_docked_selfies, args):
+    try:
+        logging.info(f"Iteration {iteration}: Generating {args.num_variants} molecules, queue size {generation_output_queue.qsize()}")
+        generated_molecules, seed_mol = generate_new_molecules(stoned, best_molecules_history, iteration, all_docked_selfies, args)
+        generation_output_queue.put((iteration, generated_molecules, seed_mol["sdf_path"]))
+    except Exception as e:
+        logging.error(f"Producer task failed at iteration {iteration}: {e}")
 
-        logging.info(f"Iteration {iteration_generated}: Docking {len(generated_molecules_sdf_list)} molecules")
-        scored_molecules_list = basic_docking(args, generated_molecules_sdf_list=generated_molecules_sdf_list, iteration=iteration_generated)
-        molecules_data = score_molecules(scored_molecules_list, config_data)
-        # Note that this function also adds selfie to all_docked_selfies
-        add_docking_csv_results(csv_path, molecules_data, iteration, seed_mol, all_docked_selfies)
 
-        # Update best molecule history
-        if molecules_data:
-            best_current = max(molecules_data, key=lambda m: m["loss_value"])
-            if best_current["loss_value"] > min([m["loss_value"] for m in best_molecules_history]):
-                best_molecules_history.append(best_current)
-            logging.info(f"Iteration {iteration_generated}: Best molecule score {best_current['loss_value']} at {best_current['sdf_path']}, with metrics {best_current['metrics']}")
-        else:
-            logging.warning(f"Iteration {iteration_generated}: No valid molecules!")
+def consumer_task(generation_output_queue, args, config_data, best_molecules_history, csv_path, docking_semaphore, all_docked_selfies, producer_consumer_semaphore):
+    try:
+        with docking_semaphore:
+            iteration_generated, generated_molecules_sdf_list, seed_mol = generation_output_queue.get()  # Blocks if empty
+
+            logging.info(f"Iteration {iteration_generated}: Docking {len(generated_molecules_sdf_list)} molecules")
+            scored_molecules_list = basic_docking(args, generated_molecules_sdf_list=generated_molecules_sdf_list, iteration=iteration_generated)
+            molecules_data = score_molecules(scored_molecules_list, config_data)
+            # Note that this function also adds selfie to all_docked_selfies
+            add_docking_csv_results(csv_path, molecules_data, iteration_generated, seed_mol, all_docked_selfies)
+
+            # Update best molecule history
+            if molecules_data:
+                best_current = max(molecules_data, key=lambda m: m["loss_value"])
+                if best_current["loss_value"] > min([m["loss_value"] for m in best_molecules_history]):
+                    best_molecules_history.append(best_current)
+                logging.info(f"Iteration {iteration_generated}: Best molecule score {best_current['loss_value']} at {best_current['sdf_path']}, with metrics {best_current['metrics']}")
+            else:
+                logging.warning(f"Iteration {iteration_generated}: No valid molecules!")
+    except Exception as e:
+        logging.error(f"Consumer task failed: {e}")
+    finally:
+        # Release the semaphore to allow a new producer-consumer pair
+        producer_consumer_semaphore.release()
 
 
 def main():
@@ -221,10 +261,10 @@ def main():
     create_docking_csv(Path(savedir / "docking_results.csv"))
 
     stoned = STONED(config_data=config_data)
-    all_docked_selfies = set() # Set of docked molecules to avoid duplicates
+    all_docked_selfies = set()  # Set of docked molecules to avoid duplicates
 
     # Initialize bounded queue
-    generation_output_queue = Queue(maxsize=8)
+    generation_output_queue = Queue(maxsize=args.docking_threads*2)
 
     best_molecules_history = [{
         "sdf_path": args.ligand,
@@ -235,12 +275,26 @@ def main():
     # Initialize semaphore to limit docking tasks to
     docking_semaphore = threading.Semaphore(args.docking_threads)
 
-    with ThreadPoolExecutor() as executor:
-        # Launch initial producer task for iteration 0
-        executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue, 0, all_docked_selfies, args)
+    # Initialize semaphore to limit producer-consumer pairs to args.docking_threads*2
+    producer_consumer_semaphore = threading.Semaphore(args.docking_threads*2)
 
+    with ThreadPoolExecutor() as executor:
         for i in range(args.num_iterations):
-            # Launch consumer task for docking
+            # Acquire semaphore before submitting a new producer-consumer pair
+            producer_consumer_semaphore.acquire()
+
+            # Submit producer task
+            executor.submit(
+                producer_task,
+                stoned,
+                best_molecules_history,
+                generation_output_queue,
+                i,
+                all_docked_selfies,
+                args
+            )
+
+            # Submit consumer task, passing the semaphore to release it after processing
             executor.submit(
                 consumer_task,
                 generation_output_queue,
@@ -248,14 +302,10 @@ def main():
                 config_data,
                 best_molecules_history,
                 Path(savedir / "docking_results.csv"),
-                i,
-                docking_semaphore,  # Pass the semaphore to consumer_task
-                all_docked_selfies
+                docking_semaphore,
+                all_docked_selfies,
+                producer_consumer_semaphore
             )
-
-            # Launch next producer task for iteration i+1
-            if i < args.num_iterations - 1:
-                executor.submit(producer_task, stoned, best_molecules_history, generation_output_queue, i+1, all_docked_selfies, args)
 
     logging.info("Optimization finished!")
 
