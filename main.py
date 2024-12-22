@@ -50,6 +50,8 @@ def get_parser():
                         help="Number of iterations for the iterative docking.")
     parser.add_argument("--num_confs", type=int, default=1,
                         help="Number of molecules to generate in each iteration.")
+    parser.add_argument("--num_modes", type=int, default=3,
+                        help="Number of modes for docking.")
     parser.add_argument("-en", "--experiment_name", type=str,
                         default="iterative_docking", help="Working directory.")
     parser.add_argument("-conf", "--config", type=str,
@@ -136,7 +138,7 @@ def basic_docking(args, generated_molecules_sdf_list, iteration):
     # Perform Docking and Score Evaluation
     unidock.docking(
         scoring_function="vina",
-        num_modes=3,
+        num_modes=args.num_modes,
         batch_size=args.batch_size,
         save_dir=Path(args.experiment_name).resolve() / "results" / f"docking_{iteration+1}",
         docking_dir_name=f"docking_{iteration+1}",
