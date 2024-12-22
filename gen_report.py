@@ -39,7 +39,26 @@ def create_plots(df, output_dir):
         return metrics_df
     
     # Affinity (loss_value) Plot
-    affinity_metrics = compute_metrics(df, 'loss_value')
+    loss_value_metrics = compute_metrics(df, 'loss_value')
+    plt.figure(figsize=(10, 6))
+    # Plot original data with low alpha
+    sns.lineplot(data=loss_value_metrics, x='Iteration', y='Top', label='Top', alpha=0.2)
+    sns.lineplot(data=loss_value_metrics, x='Iteration', y='Median', label='Median', alpha=0.2)
+    sns.lineplot(data=loss_value_metrics, x='Iteration', y='Average', label='Average', alpha=0.2)
+    # Plot smoothed data with full opacity
+    if 'Top_smooth' in loss_value_metrics.columns:
+        plt.plot(loss_value_metrics['Iteration'], loss_value_metrics['Top_smooth'], label='Top (Smoothed)', linewidth=2.5)
+        plt.plot(loss_value_metrics['Iteration'], loss_value_metrics['Median_smooth'], label='Median (Smoothed)', linewidth=2.5)
+        plt.plot(loss_value_metrics['Iteration'], loss_value_metrics['Average_smooth'], label='Average (Smoothed)', linewidth=2.5)
+    plt.title('Loss Progression Over Iterations')
+    plt.xlabel('Iteration')
+    plt.ylabel('Loss Value')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(Path(output_dir) / "loss_progression.png")
+    plt.close()
+
+    affinity_metrics = compute_metrics(df, 'Docking score')
     plt.figure(figsize=(10, 6))
     # Plot original data with low alpha
     sns.lineplot(data=affinity_metrics, x='Iteration', y='Top', label='Top', alpha=0.2)
@@ -52,7 +71,7 @@ def create_plots(df, output_dir):
         plt.plot(affinity_metrics['Iteration'], affinity_metrics['Average_smooth'], label='Average (Smoothed)', linewidth=2.5)
     plt.title('Affinity Progression Over Iterations')
     plt.xlabel('Iteration')
-    plt.ylabel('Loss Value (Affinity)')
+    plt.ylabel('Docking score (Affinity)')
     plt.legend()
     plt.tight_layout()
     plt.savefig(Path(output_dir) / "affinity_progression.png")
