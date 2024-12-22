@@ -326,113 +326,8 @@ class STONED:
         for mol in mols: 
             sa_scores.append(sascorer.calculateScore(mol))
         return sa_scores
-    
-    def generate_variations_via_mutations(self, mol, num_conformers, num_molecules, output_dir, all_docked_selfies):
-        '''Generate variations of a molecule using mutations
-        '''
-        if mol.HasProp("SELFIE"):
-            starting_selfie = mol.GetProp("SELFIE")
-        else:
-            # Encode with SELFIE string
-            starting_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-            starting_selfie = encoder(starting_smiles)
 
-        # Encode with SELFIE string
-        len_random_struct = len(self.get_selfie_chars(starting_selfie))
-
-        generated_molecules = []
-
-        def process_molecule(i):
-            try:
-                # Mutate the self string
-                mutated_selfie, mutated_smiles = self.mutate_selfie(
-                    starting_selfie, max_molecules_len=len_random_struct
-                )
-                if mutated_selfie in all_docked_selfies:
-                    # logging.info(f"Skipping molecule with selfie {mutated_selfie} as it has already been docked")
-                    return None
-
-
-                mutated_mol = Chem.MolFromSmiles(mutated_smiles)
-                if mutated_mol is None:
-                    logging.warning(f"Invalid SMILES for molecule {i+1}: {mutated_smiles}")
-                    return None
-                
-                mutated_mol = Chem.AddHs(mutated_mol)
-                mutated_mol.SetProp("SMILES", mutated_smiles)
-                mutated_mol.SetProp("SELFIE", mutated_selfie)
-
-                # Check if molecule is valid
-                try:
-                    Chem.SanitizeMol(mutated_mol)
-                except:
-                    logging.warning(f"Sanitization failed for molecule {i+1}")
-                    return None
-
-                # Add conformers
-                conformer_paths = []
-                for conf_id in range(num_conformers):
-                    embed_status = AllChem.EmbedMolecule(mutated_mol, AllChem.ETKDG())
-                    if embed_status != 0:
-                        logging.warning(f"Embedding failed for molecule {i+1}, conformer {conf_id+1}")
-                        continue
-                    AllChem.MMFFOptimizeMolecule(mutated_mol)
-
-                    # Create a copy of the molecule with just this conformer
-                    conf_mol = Chem.Mol(mutated_mol)
-                    
-                    file_name = f"generated_molecule_{i+1}_conf_{conf_id+1}.sdf"
-                    file_path = output_dir / file_name
-                    with Chem.SDWriter(str(file_path)) as writer:
-                        writer.write(conf_mol)
-                    conformer_paths.append(file_path)
-                
-                return conformer_paths if conformer_paths else None
-            except:
-                logging.warning(f"Failed to generate molecule {i+1}")
-                return None
-
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(process_molecule, i) for i in range(num_molecules)]
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    generated_molecules.extend([path for path in result if path])
-
-        return generated_molecules 
-
-
-    def generate_children_via_breeding(self, mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies):
-        mol1_smiles = Chem.MolToSmiles(mol1, isomericSmiles=True, canonical=True)
-        mol2_smiles = Chem.MolToSmiles(mol2, isomericSmiles=True, canonical=True)
-
-        paths_smiles, paths_selfies = self.get_compr_paths(mol1_smiles, mol2_smiles, num_tries=1, num_random_samples=2)
-        merged_paths_smiles = [item for sublist in paths_smiles for item in sublist]
-        merged_paths_selfies = [item for sublist in paths_selfies for item in sublist]
-
-        mols_from_paths = []    
-        for smi, selfie in zip(merged_paths_smiles, merged_paths_selfies):
-            if selfie in all_docked_selfies:
-                continue
-            mol = Chem.MolFromSmiles(smi)
-            try:
-                Chem.SanitizeMol(mol)
-            except:
-                logging.warning(f"Sanitization failed for molecule {i+1}")
-                continue
-            mol.SetProp("SMILES", smi)
-            mol.SetProp("SELFIE", selfie)
-            mols_from_paths.append(mol)
-
-        sa_scores = self.get_SA_scores(mols_from_paths)
-        # print(sa_scores)
-        # Sort by SA score smaller then 4
-        # sorted_indices = np.argsort(sa_scores)
-        # mols_from_paths = [mols_from_paths[i] for i in sorted_indices if sa_scores[i] < 4]
-        mols_from_paths = [mols_from_paths[i] for i in range(len(mols_from_paths)) if sa_scores[i] < 4]
-        mols_from_paths = mols_from_paths[:min(num_molecules, len(mols_from_paths))]
-
-        def create_conformers(mol, i):
+    def create_conformers(self, mol, num_conformers, output_dir, i):
             mol = Chem.AddHs(mol)
             try:
                 # Add conformers
@@ -457,10 +352,95 @@ class STONED:
             except:
                 logging.warning(f"Failed to generate molecule {i+1}")
                 return None
+    
+    def generate_variations_via_mutations(self, mol, num_conformers, num_molecules, output_dir, all_docked_selfies):
+        '''Generate variations of a molecule using mutations
+        '''
+        if mol.HasProp("SELFIE"):
+            starting_selfie = mol.GetProp("SELFIE")
+        else:
+            # Encode with SELFIE string
+            starting_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+            starting_selfie = encoder(starting_smiles)
+
+        len_random_struct = len(self.get_selfie_chars(starting_selfie))
+        generated_molecules = []
+
+        def process_molecule(i):
+            try:
+                mutated_selfie, mutated_smiles = self.mutate_selfie(
+                    starting_selfie, max_molecules_len=len_random_struct+2
+                )
+                if mutated_selfie in all_docked_selfies:
+                    return None
+
+                mutated_mol = Chem.MolFromSmiles(mutated_smiles)
+                if mutated_mol is None:
+                    logging.warning(f"Invalid SMILES for molecule {i+1}: {mutated_smiles}")
+                    return None
+                
+                mutated_mol.SetProp("SMILES", mutated_smiles)
+                mutated_mol.SetProp("SELFIE", mutated_selfie)
+
+                try:
+                    Chem.SanitizeMol(mutated_mol)
+                except:
+                    logging.warning(f"Sanitization failed for molecule {i+1}")
+                    return None
+
+                conformer_paths = self.create_conformers(mutated_mol, num_conformers, output_dir, i)
+                return conformer_paths if conformer_paths else None
+            except:
+                logging.warning(f"Failed to generate molecule {i+1}")
+                return None
+
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_molecule, i) for i in range(num_molecules)]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    generated_molecules.extend([path for path in result if path])
+
+        return generated_molecules 
+
+    def generate_children_via_breeding(self, mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies):
+        '''
+        Generate children molecules using breeding
+        '''
+        mol1_smiles = Chem.MolToSmiles(mol1, isomericSmiles=True, canonical=True)
+        mol2_smiles = Chem.MolToSmiles(mol2, isomericSmiles=True, canonical=True)
+
+        paths_smiles, paths_selfies = self.get_compr_paths(mol1_smiles, mol2_smiles, num_tries=1, num_random_samples=2)
+        merged_paths_smiles = [item for sublist in paths_smiles for item in sublist]
+        merged_paths_selfies = [item for sublist in paths_selfies for item in sublist]
+
+        mols_from_paths = []    
+        for smi, selfie in zip(merged_paths_smiles, merged_paths_selfies):
+            if selfie in all_docked_selfies:
+                continue
+            mol = Chem.MolFromSmiles(smi)
+            try:
+                Chem.SanitizeMol(mol)
+            except:
+                logging.warning(f"Sanitization failed for molecule")
+                continue
+            mol.SetProp("SMILES", smi)
+            mol.SetProp("SELFIE", selfie)
+            mols_from_paths.append(mol)
+
+        sa_scores = self.get_SA_scores(mols_from_paths)
+        # print(sa_scores)
+        # Sort by SA score smaller then 4
+        # sorted_indices = np.argsort(sa_scores)
+        # mols_from_paths = [mols_from_paths[i] for i in sorted_indices if sa_scores[i] < 4]
+        mols_from_paths = [mols_from_paths[i] for i in range(len(mols_from_paths)) if sa_scores[i] < 4]
+        mols_from_paths = mols_from_paths[:min(num_molecules, len(mols_from_paths))]
+
+        
 
         generated_molecules = []
         with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(create_conformers, mol, i) for i, mol in enumerate(mols_from_paths)]
+            futures = [executor.submit(self.create_conformers, mol,num_conformers, output_dir, i) for i, mol in enumerate(mols_from_paths)]
             for future in as_completed(futures):
                 result = future.result()
                 if result:
