@@ -72,6 +72,10 @@ def get_parser():
                         help="Whether to breed molecules or not.")
     parser.add_argument("--breeding_prob", type=float, default=0.5,
                         help="Probability of breeding molecules.")
+    parser.add_argument("--min_allowed_cycle_size", type=int, default=4,
+                        help="Cycles smaller than this size will be discarded.")
+    parser.add_argument("--max_allowed_cycle_size", type=int, default=8,
+                        help="Cycles larger than this size will be discarded.")
 
     return parser
 
@@ -208,7 +212,8 @@ def generate_new_molecules(stoned, best_molecules_history, iteration, all_docked
         output_dir=output_dir,
         num_molecules=args.num_variants,
         num_conformers=args.num_confs,
-        all_docked_selfies=all_docked_selfies
+        all_docked_selfies=all_docked_selfies,
+        args=args
     )
     return generated_molecules, seed_mols[0]
 

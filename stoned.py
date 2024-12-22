@@ -279,7 +279,14 @@ class STONED:
         
         return path_smiles, paths_selfies, None, None
 
-
+    
+    def detect_cycles(self, mol, smallest_allowed_cycle_size, max_allowed_cycle_size):
+        '''Throws Exception if a cycle of size smaller than smallest_allowed_cycle_size or larger than max_allowed_cycle_size is detected in mol'''
+        cycle_sizes = mol.GetRingInfo().AtomRings()
+        for cycle in cycle_sizes:
+            if len(cycle) < smallest_allowed_cycle_size or len(cycle) > max_allowed_cycle_size:
+                raise Exception(f"Detected cycle of size {len(cycle)} in molecule")
+            
     def get_compr_paths(self, starting_smile, target_smile, num_tries, num_random_samples):
         ''' Obtaining multiple paths/chemical paths from starting_smile to target_smile. 
         
@@ -335,7 +342,7 @@ class STONED:
                 for conf_id in range(num_conformers):
                     embed_status = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
                     if embed_status != 0:
-                        logging.warning(f"Embedding failed for molecule {i+1}, conformer {conf_id+1}")
+                        # logging.warning(f"Embedding failed for molecule {i+1}, conformer {conf_id+1}")
                         continue
                     AllChem.MMFFOptimizeMolecule(mol)
 
@@ -353,7 +360,7 @@ class STONED:
                 logging.warning(f"Failed to generate molecule {i+1}")
                 return None
     
-    def generate_variations_via_mutations(self, mol, num_conformers, num_molecules, output_dir, all_docked_selfies):
+    def generate_variations_via_mutations(self, mol, num_conformers, num_molecules, output_dir, all_docked_selfies, args):
         '''Generate variations of a molecule using mutations
         '''
         if mol.HasProp("SELFIE"):
@@ -384,8 +391,10 @@ class STONED:
 
                 try:
                     Chem.SanitizeMol(mutated_mol)
+                    # Check for cycles 4 and less and 9 and more
+                    self.detect_cycles(mutated_mol, args.min_allowed_cycle_size, args.max_allowed_cycle_size)
                 except:
-                    logging.warning(f"Sanitization failed for molecule {i+1}")
+                    # logging.warning(f"Sanitization failed for molecule {i+1}")
                     return None
 
                 conformer_paths = self.create_conformers(mutated_mol, num_conformers, output_dir, i)
@@ -403,7 +412,7 @@ class STONED:
 
         return generated_molecules 
 
-    def generate_children_via_breeding(self, mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies):
+    def generate_children_via_breeding(self, mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies, args):
         '''
         Generate children molecules using breeding
         '''
@@ -421,8 +430,10 @@ class STONED:
             mol = Chem.MolFromSmiles(smi)
             try:
                 Chem.SanitizeMol(mol)
+                # Check for cycles 4 and less and 9 and more
+                self.detect_cycles(mol, args.min_allowed_cycle_size, args.max_allowed_cycle_size)
             except:
-                logging.warning(f"Sanitization failed for molecule")
+                # logging.warning(f"Sanitization failed for molecule")
                 continue
             mol.SetProp("SMILES", smi)
             mol.SetProp("SELFIE", selfie)
@@ -454,7 +465,8 @@ class STONED:
         output_dir: Path,
         num_molecules: int = 32,
         num_conformers: int = 1,
-        all_docked_selfies: set[str] = None
+        all_docked_selfies: set[str] = None,
+        args = None
                         ) -> List[Path]:
         """Generates a set of molecules using STONED with conformer optimization and parallel processing."""
         os.makedirs(output_dir, exist_ok=True)
@@ -476,24 +488,17 @@ class STONED:
         # Generate variations for the first molecule
         if len(seed_molecule_path) == 1:
             generated_molecules = self.generate_variations_via_mutations(
-                mol1, num_conformers, num_molecules, output_dir, all_docked_selfies
+                mol1, num_conformers, num_molecules, output_dir, all_docked_selfies, args
             )
         else:
             # Generate variations for the second molecule
             generated_molecules = self.generate_children_via_breeding(
-                mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies
+                mol1, mol2, num_conformers, num_molecules, output_dir, all_docked_selfies, args
             )
         return generated_molecules
 
 if __name__ == "__main__":
     # Example usage
-    config_data = {
-        "sa_weight": 1,
-        "qed_weight": 1,
-        "docking_weight": 1
-    }
-    stoned = STONED(config_data)
-    seed_molecule_path = [Path("examples/TrmD/Compound23_docked.sdf"), Path("examples/TrmD/Compound37_docked.sdf")]
-    output_dir = Path("experiments/generated_molecules")
-    generated_molecules = stoned.generate_molecules(seed_molecule_path, output_dir, num_molecules=32, num_conformers=1)
-    print(len(generated_molecules))
+    stoned = STONED({})
+    mol = Chem.SDMolSupplier("generated_molecule_2_conf_1.sdf", removeHs=True)[0]
+    stoned.detect_cycles(mol, 4, 9)
