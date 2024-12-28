@@ -286,6 +286,26 @@ class STONED:
         for cycle in cycle_sizes:
             if len(cycle) < smallest_allowed_cycle_size or len(cycle) > max_allowed_cycle_size:
                 raise Exception(f"Detected cycle of size {len(cycle)} in molecule")
+
+    def detect_oxygen_triple_bonds(self, mol):
+        '''Throws Exception if an oxygen has triple bonds or has 3 bonds in mol'''
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 8:  # Oxygen atom
+                # Check number of bonds
+                if len(atom.GetBonds()) == 3:
+                    raise Exception("Detected oxygen with three bonds in molecule")
+                
+                bond_count = 0
+                for bond in atom.GetBonds():
+                    if bond.GetBondType() == Chem.rdchem.BondType.SINGLE:
+                        bond_count += 1
+                    if bond.GetBondType() == Chem.rdchem.BondType.DOUBLE:
+                        bond_count += 2
+                    if bond.GetBondType() == Chem.rdchem.BondType.TRIPLE:
+                        bond_count += 3
+                if bond_count == 3:
+                    raise Exception("Detected oxygen with triple bonds in molecule")
+
             
     def get_compr_paths(self, starting_smile, target_smile, num_tries, num_random_samples):
         ''' Obtaining multiple paths/chemical paths from starting_smile to target_smile. 
@@ -391,8 +411,8 @@ class STONED:
 
                 try:
                     Chem.SanitizeMol(mutated_mol)
-                    # Check for cycles 4 and less and 9 and more
                     self.detect_cycles(mutated_mol, args.min_allowed_cycle_size, args.max_allowed_cycle_size)
+                    self.detect_oxygen_triple_bonds(mutated_mol)
                 except:
                     # logging.warning(f"Sanitization failed for molecule {i+1}")
                     return None
@@ -432,6 +452,7 @@ class STONED:
                 Chem.SanitizeMol(mol)
                 # Check for cycles 4 and less and 9 and more
                 self.detect_cycles(mol, args.min_allowed_cycle_size, args.max_allowed_cycle_size)
+                self.detect_oxygen_triple_bonds(mol)
             except:
                 # logging.warning(f"Sanitization failed for molecule")
                 continue
@@ -500,5 +521,6 @@ class STONED:
 if __name__ == "__main__":
     # Example usage
     stoned = STONED({})
-    mol = Chem.SDMolSupplier("generated_molecule_2_conf_1.sdf", removeHs=True)[0]
-    stoned.detect_cycles(mol, 4, 9)
+    mol = Chem.SDMolSupplier("broken.sdf", removeHs=True)[0]
+    # stoned.detect_cycles(mol, 4, 9)
+    stoned.detect_oxygen_triple_bonds(mol)
