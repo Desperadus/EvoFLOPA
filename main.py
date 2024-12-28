@@ -20,8 +20,12 @@ from typing import List, Dict
 import csv
 import numpy as np
 
+import random
+
 from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*')
+
+import json
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -34,6 +38,8 @@ def get_parser():
     # Path to multiple ligands
     parser.add_argument("-ls", "--ligands", type=str, nargs='+',
                         help="Paths to the starting ligands SDF files.")
+    parser.add_argument("-sf", "--scoring_function", type=str, default="vina",
+                        help="Scoring function for docking (default vina).")
     parser.add_argument("-cx", "--center_x", type=float, required=True,
                         help="Center X coordinate for the docking box.")
     parser.add_argument("-cy", "--center_y", type=float, required=True,
@@ -46,6 +52,10 @@ def get_parser():
                         help="Size Y for docking box (default 22.5)")
     parser.add_argument("-sz", "--size_z", type=float, default=22.5,
                         help="Size Z for docking box (default 22.5)")
+    parser.add_argument("-ms", "--max_step", type=int, default=20,
+                        help="Maximum number of steps for the optimization. Unidock parameter.")
+    parser.add_argument("-ex", "--exhaustiveness", type=int, default=256,
+                        help="Exhaustiveness parameter for the docking. Unidock parameter.")
     parser.add_argument("--num_iterations", type=int, default=10,
                         help="Number of iterations for the iterative docking.")
     parser.add_argument("--num_confs", type=int, default=1,
@@ -64,21 +74,26 @@ def get_parser():
                         help="Number of docking tasks to run in parallel.")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Verbose mode.")
-    parser.add_argument("-tnh", "--top_n_history", type=int, default=125,
+    parser.add_argument("-tnh", "--top_n_history", type=int, default=128,
                         help="Number of best molecules to consider for selection.")
-    parser.add_argument("-temp", "--temperature", type=float, default=0.666,
+    parser.add_argument("-temp", "--temperature", type=float, default=0.8,
                         help="Temperature molecule selection")
     parser.add_argument("--breed", action="store_true",
                         help="Whether to breed molecules or not.")
-    parser.add_argument("--breeding_prob", type=float, default=0.5,
+    parser.add_argument("--breeding_prob", type=float, default=0.3,
                         help="Probability of breeding molecules.")
     parser.add_argument("--min_allowed_cycle_size", type=int, default=4,
                         help="Cycles smaller than this size will be discarded.")
     parser.add_argument("--max_allowed_cycle_size", type=int, default=8,
                         help="Cycles larger than this size will be discarded.")
-
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Seed for random number generator.")
     return parser
 
+def save_params_to_file(args, output_dir):
+    # Save parameters as a json file
+    with open(output_dir / "params.json", "w") as f:
+        json.dump(vars(args), f)
 
 def select_seed_molecule(best_molecules_history, num_of_molecules, args):
     """
@@ -100,24 +115,20 @@ def select_seed_molecule(best_molecules_history, num_of_molecules, args):
     # Sort molecules by 'loss_value' in descending order
     sorted_molecules = sorted(best_molecules_history, key=lambda x: x["loss_value"], reverse=True)
 
-    # Consider only the top_n_history best molecules
+    # Consider only the top_n_history best molecules - inefficient
     top_mols = sorted_molecules[:args.top_n_history]
 
     if num_of_molecules > len(top_mols):
         num_of_molecules = len(top_mols)
 
-    # Extract 'loss_value' scores
     scores = np.array([m["loss_value"] for m in top_mols])
 
-    # Apply temperature scaling and compute softmax probabilities
     scaled_scores = scores / args.temperature
-    # To prevent overflow, subtract the max scaled score from all scaled scores
     scaled_scores -= np.max(scaled_scores)
     exp_scores = np.exp(scaled_scores)
     probs = exp_scores / np.sum(exp_scores)
 
     if num_of_molecules == 1:
-        # Select a single molecule based on the computed probabilities
         chosen_molecule = np.random.choice(top_mols, p=probs)
         return [chosen_molecule]
     else:
@@ -146,6 +157,9 @@ def basic_docking(args, generated_molecules_sdf_list, iteration):
         batch_size=args.batch_size,
         save_dir=Path(args.experiment_name).resolve() / "results" / f"docking_{iteration+1}",
         docking_dir_name=f"docking_{iteration+1}",
+        exhaustiveness=args.exhaustiveness,
+        max_step=args.max_step,
+        seed=args.seed
     )
     scored_molecules_list = [Path(args.experiment_name).resolve() / "results" / f"docking_{iteration+1}" / f"{Path(mol_path).stem}.sdf" for mol_path in generated_molecules_sdf_list]
 
@@ -271,6 +285,7 @@ def main():
     os.makedirs(workdir, exist_ok=True)
     os.makedirs(savedir, exist_ok=True)
     create_docking_csv(Path(savedir / "docking_results.csv"))
+    save_params_to_file(args, savedir)
 
     stoned = STONED(config_data=config_data)
     all_docked_selfies = set()  # Set of docked molecules to avoid duplicates
@@ -281,7 +296,7 @@ def main():
     if args.ligand:
         best_molecules_history = [{
             "sdf_path": args.ligand,
-            "loss_value": 10,
+            "loss_value": 10, ## Arbitary value - should be set to be around the actual loss value - to lazy to implement
             "metrics": {}
         }]
     else:
@@ -330,4 +345,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # set seeds
+    np.random.seed(42)
+    random.seed(42)
+    # Run the magic
     main()
