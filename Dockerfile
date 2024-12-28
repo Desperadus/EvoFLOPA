@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.0.0-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 
 # Set the working directory in the container
 WORKDIR /app
@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     git \
     vim \
-    libgl1-mesa-glx \
+    libgl1 \
     libxext6 \
     libsm6 \
     libxrender1 \
@@ -35,7 +35,7 @@ ENV MPLBACKEND=Agg
 
 
 # Make the main.py executable
-RUN chmod +x main.py
+RUN chmod +x src/main.py
 
 # Command to run when the container starts
 # CMD ["/bin/bash", "-c", "source ~/.bashrc"]
