@@ -1,5 +1,5 @@
 {
-  "sa_weight": 2.6,
-  "qed_weight": 0.8,
+  "sa_weight": 3.5,
+  "qed_weight": 1,
   "docking_weight": 1.0
 }
