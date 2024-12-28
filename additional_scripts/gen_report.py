@@ -329,7 +329,7 @@ def main():
     create_plots(df, output_dir)
     create_network_plot(df, output_dir)
     save_top_molecules_to_file(df, output_dir / "top_molecules.txt")
-    best_mols_paths = prepare_best_molecules_for_rmtscoring(df, output_dir / "top_molecules_for_rmtscoring", top_n=50)
+    best_mols_paths = prepare_best_molecules_for_rmtscoring(df, output_dir / "top_molecules_for_rmtscoring", top_n=args.top_n)
     extract_and_combine_best_poses(best_mols_paths, output_dir / "top_molecules_for_rmtscoring" / "best_poses.sdf")
 
     print(f"\nReport generation completed. All plots are saved in '{output_dir}' directory.")
