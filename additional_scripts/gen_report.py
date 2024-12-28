@@ -7,12 +7,18 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import networkx as nx
 from pathlib import Path
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate Report from Docking Results CSV")
     parser.add_argument(
         "--csv_path", type=str, required=True,
         help="Path to the docking results CSV file."
+    )
+    parser.add_argument(
+        "--top_n", type=int, default=50,
+        help="Number of top molecules to include for rmtscoring."
     )
 
     return parser.parse_args()
@@ -210,6 +216,96 @@ def save_top_molecules_to_file(df, file_path):
         file.write(top_sa.to_string(index=False))
         file.write("\n")
 
+
+def get_morgan_fingerprint(sdf_path):
+    """Generate Morgan fingerprint for a molecule."""
+    try:
+        mol = Chem.SDMolSupplier(str(sdf_path))[0]
+        if mol is None:
+            return None
+        return AllChem.GetMorganFingerprintAsBitVect(mol, 2, 2048)
+    except:
+        return None
+
+def prepare_best_molecules_for_rmtscoring(df, output_dir, top_n=50):
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Sort molecules by loss_value
+    sorted_molecules = df.sort_values('loss_value', ascending=False)
+    
+    # Initialize list to store unique molecules
+    unique_molecules = []
+    unique_fingerprints = set()
+    
+    # Iterate through molecules until we find top_n unique ones
+    for _, row in sorted_molecules.iterrows():
+        if len(unique_molecules) >= top_n:
+            break
+            
+        fp = get_morgan_fingerprint(row['sdf_path'])
+        if fp is None:
+            continue
+            
+        fp_bytes = fp.ToBitString()
+        if fp_bytes not in unique_fingerprints:
+            unique_fingerprints.add(fp_bytes)
+            unique_molecules.append(row)
+
+    # Convert to DataFrame
+    top_molecules = pd.DataFrame(unique_molecules)[['sdf_path', 'loss_value', 'QED', 'SA', 'Docking score', 'SELFIE']]
+    # Add molecule name as best_1, best_2, ...
+    top_molecules['molecule_name'] = [f"best_{i}" for i in range(1, len(top_molecules) + 1)]
+    top_molecules.to_csv(output_dir / "top_molecules_for_rmtscoring.csv", index=False)
+
+    # Copy unique sdf files to output_dir
+    for i, row in enumerate(top_molecules.itertuples(), start=1):
+        sdf_path = Path(row.sdf_path)
+        new_sdf_path = output_dir / f"best_{i}.sdf"
+        os.system(f"cp {sdf_path} {new_sdf_path}")
+
+    print(f"Top {len(top_molecules)} unique molecules by loss value saved in {output_dir}")
+
+    # get list of paths to the new sdf files
+    new_sdf_files = [str(output_dir / f"best_{i}.sdf") for i in range(1, len(top_molecules) + 1)]
+    return new_sdf_files
+
+def extract_and_combine_best_poses(input_sdf_files, output_sdf_file):
+    """
+    Extracts the best scoring pose from each input SDF file and writes them to a single output SDF file.
+
+    Parameters:
+        input_sdf_files (list of str): List of file paths to input SDF files.
+        output_sdf_file (str): Path to the output SDF file.
+    """
+    def get_best_pose(sdf_file, molecule_name):
+        supplier = Chem.SDMolSupplier(sdf_file, removeHs=False)
+        best_mol = None
+        best_score = float('inf')  # Initialize with a very large number
+
+        for mol in supplier:
+            if mol is None:  # Skip invalid molecules
+                continue
+            score = mol.GetProp("docking_score")  # Extract the docking score
+            if float(score) < best_score:
+                best_score = float(score)
+                best_mol = mol
+
+        if best_mol:
+            best_mol.SetProp("_Name", molecule_name)  # Rename the molecule
+        return best_mol
+
+    # Create an SDWriter to write the output SDF
+    writer = Chem.SDWriter(output_sdf_file)
+
+    for idx, sdf_file in enumerate(input_sdf_files, start=1):
+        molecule_name = f"best_{idx}"
+        best_pose = get_best_pose(sdf_file, molecule_name)
+        if best_pose:
+            writer.write(best_pose)  # Write the best scoring pose to the output SDF
+
+    writer.close()
+    print(f"Best scoring poses have been concatenated into {output_sdf_file}")
+
 def main():
     args = parse_args()
 
@@ -233,6 +329,8 @@ def main():
     create_plots(df, output_dir)
     create_network_plot(df, output_dir)
     save_top_molecules_to_file(df, output_dir / "top_molecules.txt")
+    best_mols_paths = prepare_best_molecules_for_rmtscoring(df, output_dir / "top_molecules_for_rmtscoring", top_n=50)
+    extract_and_combine_best_poses(best_mols_paths, output_dir / "top_molecules_for_rmtscoring" / "best_poses.sdf")
 
     print(f"\nReport generation completed. All plots are saved in '{output_dir}' directory.")
 
