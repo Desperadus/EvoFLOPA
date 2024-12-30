@@ -12,6 +12,7 @@ The pipeline follows these steps:
 4. **Selection**: Retain the best molecules to seed the next iteration.
 5. **Report Generation**: Create visualizations and reports of molecule properties and optimization progress.
 
+![Pipeline](assets/EvoFlopa.png)
 
 ## Prerequisites
 
