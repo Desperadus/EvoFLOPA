@@ -61,7 +61,7 @@ def create_plots(df, output_dir):
     plt.ylabel('Loss Value')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(Path(output_dir) / "loss_progression.png")
+    plt.savefig(Path(output_dir) / "loss_progression.pdf")
     plt.close()
 
     affinity_metrics = compute_metrics(df, 'Docking score')
@@ -80,7 +80,7 @@ def create_plots(df, output_dir):
     plt.ylabel('Docking score (Affinity)')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(Path(output_dir) / "affinity_progression.png")
+    plt.savefig(Path(output_dir) / "affinity_progression.pdf")
     plt.close()
 
     # QED Plot
@@ -98,7 +98,7 @@ def create_plots(df, output_dir):
     plt.ylabel('QED')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(Path(output_dir) / "qed_progression.png")
+    plt.savefig(Path(output_dir) / "qed_progression.pdf")
     plt.close()
 
     # SA Plot
@@ -116,7 +116,7 @@ def create_plots(df, output_dir):
     plt.ylabel('SA')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(Path(output_dir) / "sa_progression.png")
+    plt.savefig(Path(output_dir) / "sa_progression.pdf")
     plt.close()
 
     print(f"Plots saved in {output_dir}")
@@ -166,7 +166,7 @@ def create_network_plot(df, output_dir):
     plt.title('Seed Molecules Network')
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig(Path(output_dir) / "seed_network_by_usage.png")
+    plt.savefig(Path(output_dir) / "seed_network_by_usage.pdf")
     plt.close()
 
     print(f"Network plot by usage count saved in {output_dir}")
@@ -188,7 +188,7 @@ def create_network_plot(df, output_dir):
     plt.title('Seed Molecules Network by Binding Score Affinity')
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig(Path(output_dir) / "seed_network_by_affinity.png")
+    plt.savefig(Path(output_dir) / "seed_network_by_affinity.pdf")
     plt.close()
 
     print(f"Network plot by binding score affinity saved in {output_dir}")
