@@ -26,7 +26,7 @@ ENV PATH="/opt/conda/bin:${PATH}"
 # Create and activate the conda environment
 RUN conda init bash && conda env create -f env.yml
 ENV CONDA_DEFAULT_ENV=stocking
-RUN echo "conda activate stocking" >> ~/.bashrc
+RUN echo "conda activate evoflopa" >> ~/.bashrc
 
 # Copy the project files into the container
 COPY . .
