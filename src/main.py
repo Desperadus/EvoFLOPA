@@ -88,6 +88,8 @@ def get_parser():
                         help="Cycles larger than this size will be discarded.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Seed for random number generator.")
+    parser.add_argument("--initial_loss_value", type=float, default=10,
+                        help="Initial loss value for the starting ligand.")
     return parser
 
 def save_params_to_file(args, output_dir):
@@ -296,13 +298,13 @@ def main():
     if args.ligand:
         best_molecules_history = [{
             "sdf_path": args.ligand,
-            "loss_value": 10, ## Arbitary value - should be set to be around the actual loss value - to lazy to implement
+            "loss_value": args.initial_loss_value, ## Arbitary value - should be set to be around the actual loss value - to lazy to implement
             "metrics": {}
         }]
     else:
         best_molecules_history = [{
             "sdf_path": ligand,
-            "loss_value": 10,
+            "loss_value": args.initial_loss_value,
             "metrics": {}
         } for ligand in args.ligands]
 
