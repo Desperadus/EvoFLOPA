@@ -27,7 +27,10 @@ def create_plots(df, output_dir):
     sns.set(style="whitegrid")
     
     def compute_metrics(df, column):
-        grouped = df.groupby('Iteration')[column]
+        # Remove -inf values for calculations
+        df_clean = df[df[column] != float('-inf')]
+        
+        grouped = df_clean.groupby('Iteration')[column]
         metrics_df = pd.DataFrame({
             "Iteration": grouped.mean().index,
             "Top": grouped.max().values,
@@ -40,7 +43,13 @@ def create_plots(df, output_dir):
         window_size = len(metrics_df) // 10  # Adjust
         if window_size > 0:
             for col in ['Top', 'Median', 'Average', 'Lowest']:
-                metrics_df[f'{col}_smooth'] = metrics_df[col].rolling(window=window_size, center=True).mean()
+                # Replace -inf with NaN before rolling average
+                metrics_df[col] = metrics_df[col].replace([float('-inf')], float('nan'))
+                metrics_df[f'{col}_smooth'] = metrics_df[col].rolling(
+                    window=window_size, 
+                    center=True, 
+                    min_periods=1  # Require at least 1 valid value
+                ).mean()
         
         return metrics_df
     
