@@ -27,7 +27,7 @@ The pipeline follows these steps:
 Navigate to the project directory (where the `Dockerfile` is located) and run:
 
 ```bash
-docker build -t stocking_app .
+docker build -t evoflopa .
 ```
 
 ### 2. Run the Container
@@ -35,7 +35,7 @@ docker build -t stocking_app .
 Launch the Docker container:
 
 ```bash
-docker run -it --rm --gpus all -v $(pwd):/app/ stocking_app
+docker run -it --rm --gpus all -v $(pwd):/app/ evoflopa
 ```
 
 Once inside the container, execute the main script:
