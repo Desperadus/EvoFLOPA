@@ -2,6 +2,8 @@
 
 This project utilising CUDA and robust SELFIE representation of molecules can create new improved versions of them efficiently.
 
+Read the report - [https://github.com/Desperadus/EvoFLOPA/blob/main/assets/EvoFLOPA.pdf](https://github.com/Desperadus/EvoFLOPA/blob/main/assets/EvoFLOPA.pdf)
+
 ## Overview
 
 The pipeline follows these steps:
